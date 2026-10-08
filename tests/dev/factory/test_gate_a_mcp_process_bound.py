@@ -17,6 +17,7 @@ from dev.factory.gate_a_mcp.preflight import (
 from dev.factory.gate_a_mcp.process_witness import (
     ProcessWitnessError,
     QualifiedProcessWitness,
+    load_qualified_witness,
     stamp_gate_a_mcp_success_payload,
     validate_live_witness,
     wait_for_qualified_witness,
@@ -62,13 +63,8 @@ def test_witness_rejects_process_replacement(tmp_path: Path) -> None:
 def test_witness_rejects_stale_nonce(tmp_path: Path) -> None:
     witness = _sample_witness()
     write_qualified_witness(tmp_path, witness)
-    loaded = wait_for_qualified_witness(
-        tmp_path,
-        expected_nonce="nonce-a",
-        expected_pid=os.getpid(),
-        timeout_seconds=1.0,
-    )
-    assert loaded.witness_nonce == "nonce-a"
+    loaded = load_qualified_witness(tmp_path)
+    validate_live_witness(loaded, expected_nonce="nonce-a", expected_pid=os.getpid())
     with pytest.raises(ProcessWitnessError, match="nonce mismatch"):
         validate_live_witness(loaded, expected_nonce="other-nonce")
 
