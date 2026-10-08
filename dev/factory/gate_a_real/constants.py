@@ -22,6 +22,20 @@ VERIFY_TIMEOUT_SECONDS = 600.0
 
 REAL_TASK_CONFIG_KEYS = frozenset({"cli-config.json", "mcp.json"})
 
+FORBIDDEN_REVIEW_TOOL_NAMES = frozenset(
+    {
+        "shell",
+        "write",
+        "edit",
+        "delete",
+        "webfetch",
+        "mcp",
+        "getmcptools",
+    }
+)
+
+ALLOWED_REVIEW_TOOL_NAMES = frozenset({"read", "grep", "glob"})
+
 
 def resolve_cursor_executable() -> str:
     override = os.environ.get("GATE_A_REAL_CURSOR_EXECUTABLE", "").strip()

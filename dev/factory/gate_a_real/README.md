@@ -20,11 +20,15 @@ export OMNIGENT_FACTORY_GATE_A_REAL_TASK=1
 python - <<'PY'
 import json, tempfile
 from pathlib import Path
-from dev.factory.gate_a_real.profile import materialize_real_task_cursor_config_dir
+from dev.factory.gate_a_real.profile import (
+    materialize_real_task_cursor_config_dir,
+    materialize_real_task_review_config_dir,
+)
 from dev.factory.gate_a_real.spec import canonical_spec_sha256
 
 parent = Path(tempfile.mkdtemp())
 profile = materialize_real_task_cursor_config_dir(parent)
+review_profile = materialize_real_task_review_config_dir(parent / "review")
 spec = {
     "task_id": "my-task",
     "workspace": "/absolute/path/to/worktree",
@@ -33,6 +37,7 @@ spec = {
     "deliverable_paths": ["path/under/workspace"],
     "verify_command": ["pytest", "tests/foo.py", "-q"],
     "config_hashes": profile["effective_config_hashes"],
+    "review_config_hashes": review_profile["effective_config_hashes"],
 }
 spec["spec_sha256"] = canonical_spec_sha256(spec)
 print(json.dumps(spec, indent=2))

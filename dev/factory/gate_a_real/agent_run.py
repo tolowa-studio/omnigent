@@ -12,8 +12,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from dev.factory.gate_a_real.constants import FORBIDDEN_CLI_FLAGS
+from dev.factory.gate_a_real.constants import (
+    FORBIDDEN_CLI_FLAGS,
+    FORBIDDEN_REVIEW_TOOL_NAMES,
+)
 from dev.factory.gate_a_trial.stream_json import (
+    _non_tool_call_event_carries_tool_evidence,
     headless_stream_final_result_acceptable,
     parse_stream_json,
 )
@@ -103,6 +107,297 @@ def stream_terminal_result_text(stdout: str) -> str | None:
         if subtype is not None or event.get("is_error") is True:
             return None
     return terminal
+
+
+def builder_stdout_acceptable(stdout: str) -> tuple[bool, str]:
+    """Builder must end with a successful terminal stream-json result event."""
+    return headless_stream_final_result_acceptable(stdout)
+
+
+def _review_payload_has_execution_evidence(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("type") == "tool_use":
+            return True
+        name = value.get("name")
+        if isinstance(name, str) and any(
+            key in value for key in ("args", "result", "status", "input")
+        ):
+            return True
+        if any(
+            key
+            in {
+                "tool_call",
+                "stdout",
+                "stderr",
+                "exitCode",
+                "exit_code",
+                "bytesWritten",
+                "output",
+                "failure",
+                "spawnError",
+                "command",
+                "timeout",
+            }
+            or key.endswith("ToolCall")
+            for key in value
+        ):
+            return True
+        return any(_review_payload_has_execution_evidence(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_review_payload_has_execution_evidence(item) for item in value)
+    return False
+
+
+def _review_fields_match_schema(value: object, fields: dict[str, type]) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.keys() <= fields.keys()
+        and all(type(item) is fields[key] for key, item in value.items())
+    )
+
+
+def _review_grep_workspace_results_ok(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for path, workspace in value.items():
+        if not isinstance(path, str) or not isinstance(workspace, dict):
+            return False
+        if not _review_fields_match_schema(workspace, {"content": dict}):
+            return False
+        content = workspace.get("content", {})
+        if not _review_fields_match_schema(
+            content,
+            {
+                "clientTruncated": bool,
+                "matches": list,
+                "ripgrepTruncated": bool,
+                "totalLines": int,
+                "totalMatchedLines": int,
+            },
+        ):
+            return False
+        for file_result in content.get("matches", []):
+            if not _review_fields_match_schema(file_result, {"file": str, "matches": list}):
+                return False
+            for match in file_result.get("matches", []):
+                if not _review_fields_match_schema(
+                    match,
+                    {
+                        "content": str,
+                        "contentTruncated": bool,
+                        "isContextLine": bool,
+                        "lineNumber": int,
+                    },
+                ):
+                    return False
+    return True
+
+
+def _review_native_tool_payload_ok(variant: str, args: object, result: object | None) -> bool:
+    arg_fields = {
+        "readToolCall": {"path": str, "offset": int, "limit": int},
+        "grepToolCall": {
+            "pattern": str,
+            "path": str,
+            "caseInsensitive": bool,
+            "multiline": bool,
+            "toolCallId": str,
+            "offset": int,
+        },
+        "globToolCall": {"targetDirectory": str, "globPattern": str},
+    }
+    if not _review_fields_match_schema(args, arg_fields[variant]):
+        return False
+    if result is None:
+        return True
+    if not isinstance(result, dict) or len(result) != 1:
+        return False
+    if "error" in result:
+        return _review_fields_match_schema(result["error"], {"errorMessage": str})
+    if "success" not in result:
+        return False
+    success = result["success"]
+    success_fields = {
+        "readToolCall": {
+            "content": str,
+            "exceededLimit": bool,
+            "fileSize": int,
+            "isEmpty": bool,
+            "path": str,
+            "readRange": dict,
+            "relatedCursorRulePaths": list,
+            "relatedCursorRules": list,
+            "totalLines": int,
+        },
+        "grepToolCall": {
+            "outputMode": str,
+            "path": str,
+            "pattern": str,
+            "workspaceResults": dict,
+        },
+        "globToolCall": {
+            "clientTruncated": bool,
+            "files": list,
+            "path": str,
+            "pattern": str,
+            "ripgrepTruncated": bool,
+            "totalFiles": int,
+        },
+    }
+    if not _review_fields_match_schema(success, success_fields[variant]):
+        return False
+    if variant == "readToolCall":
+        return (
+            (
+                "readRange" not in success
+                or _review_fields_match_schema(
+                    success["readRange"], {"startLine": int, "endLine": int}
+                )
+            )
+            and all(isinstance(item, str) for item in success.get("relatedCursorRulePaths", []))
+            and all(isinstance(item, str) for item in success.get("relatedCursorRules", []))
+        )
+    if variant == "globToolCall":
+        return all(isinstance(item, str) for item in success.get("files", []))
+    return _review_grep_workspace_results_ok(success.get("workspaceResults", {}))
+
+
+def review_stdout_forbidden_tool_violations(stdout: str) -> list[str]:
+    """Admit only paired Read/Grep/Glob events from the native Cursor stream."""
+    variants = {
+        "readToolCall": "Read",
+        "grepToolCall": "Grep",
+        "globToolCall": "Glob",
+    }
+    problems: list[str] = []
+    pending: dict[str, tuple[str, dict[str, object]]] = {}
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            problems.append("review stream contains invalid JSON")
+            continue
+        if not isinstance(event, dict):
+            problems.append("review stream contains non-object JSON")
+            continue
+        if event.get("type") != "tool_call":
+            if _non_tool_call_event_carries_tool_evidence(event):
+                problems.append("review stream contains tool evidence outside a tool-call event")
+            continue
+        if not event.keys() <= {
+            "type",
+            "subtype",
+            "call_id",
+            "tool_call",
+            "model_call_id",
+            "session_id",
+            "timestamp_ms",
+        }:
+            problems.append("review stream contains unparsed tool-call fields")
+            continue
+        if not all(
+            type(event[key]) is expected
+            for key, expected in (
+                ("session_id", str),
+                ("model_call_id", str),
+                ("timestamp_ms", int),
+            )
+            if key in event
+        ):
+            problems.append("review stream contains invalid event metadata")
+            continue
+        if _review_payload_has_execution_evidence(
+            {
+                key: value
+                for key, value in event.items()
+                if key not in {"type", "subtype", "call_id", "tool_call"}
+            }
+        ):
+            problems.append("review stream contains tool evidence in event metadata")
+            continue
+        tool_call = event.get("tool_call")
+        if not isinstance(tool_call, dict):
+            problems.append("review stream contains unparsed tool-call variant")
+            continue
+        present = [key for key in tool_call if key.endswith("ToolCall")]
+        if len(present) != 1:
+            name = tool_call.get("name")
+            if isinstance(name, str) and name.casefold() in FORBIDDEN_REVIEW_TOOL_NAMES:
+                problems.append(f"review attempted forbidden tool call: {name}")
+            else:
+                problems.append("review stream contains unparsed tool-call variant")
+            continue
+        variant = present[0]
+        name = variants.get(variant)
+        if name is None:
+            problems.append(f"review attempted forbidden or unknown tool call: {variant}")
+            continue
+        if not tool_call.keys() <= {
+            variant,
+            "toolCallId",
+            "hookAdditionalContexts",
+            "startedAtMs",
+            "completedAtMs",
+        }:
+            problems.append("review stream contains unparsed tool-call wrapper fields")
+            continue
+        if (
+            not all(
+                type(tool_call[key]) is expected
+                for key, expected in (
+                    ("toolCallId", str),
+                    ("startedAtMs", str),
+                    ("completedAtMs", str),
+                )
+                if key in tool_call
+            )
+            or tool_call.get("hookAdditionalContexts", []) != []
+        ):
+            problems.append("review stream contains invalid wrapper metadata")
+            continue
+        if _review_payload_has_execution_evidence(
+            {key: value for key, value in tool_call.items() if key != variant}
+        ):
+            problems.append("review stream contains tool evidence in wrapper metadata")
+            continue
+        block = tool_call.get(variant)
+        call_id = event.get("call_id")
+        if (
+            not isinstance(block, dict)
+            or not isinstance(call_id, str)
+            or not call_id
+            or tool_call.get("toolCallId") != call_id
+        ):
+            problems.append(f"review {name} call has invalid event binding")
+            continue
+        args = block.get("args")
+        if (
+            not block.keys() <= {"args", "result"}
+            or not isinstance(args, dict)
+            or not _review_native_tool_payload_ok(variant, args, block.get("result"))
+            or _review_payload_has_execution_evidence(args)
+            or _review_payload_has_execution_evidence(block.get("result"))
+        ):
+            problems.append(f"review {name} call contains unparsed or execution fields")
+            continue
+        subtype = event.get("subtype")
+        if subtype == "started":
+            if call_id in pending or "result" in block:
+                problems.append(f"review {name} start is ambiguous")
+            else:
+                pending[call_id] = (variant, args)
+        elif subtype == "completed":
+            if pending.pop(call_id, None) != (variant, args) or not isinstance(
+                block.get("result"), dict
+            ):
+                problems.append(f"review {name} completion is unpaired")
+        else:
+            problems.append(f"review {name} has unknown tool-call subtype")
+    if pending:
+        problems.append("review stream has unfinished tool calls")
+    return problems
 
 
 def review_stdout_passes(stdout: str) -> bool:

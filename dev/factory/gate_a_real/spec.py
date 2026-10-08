@@ -24,6 +24,7 @@ class RealTaskSpec:
     deliverable_paths: tuple[str, ...]
     verify_command: tuple[str, ...]
     config_hashes: dict[str, str]
+    review_config_hashes: dict[str, str]
     raw: dict[str, Any]
 
 
@@ -117,6 +118,15 @@ def load_real_task_spec(path: Path) -> RealTaskSpec:
             raise RealTaskSpecError("config_hashes values must be 64-char hex digests")
         hashes[key] = value.lower()
 
+    review_config_hashes = document.get("review_config_hashes")
+    if not isinstance(review_config_hashes, dict) or not review_config_hashes:
+        raise RealTaskSpecError("review_config_hashes is required")
+    review_hashes: dict[str, str] = {}
+    for key, value in review_config_hashes.items():
+        if not isinstance(key, str) or not isinstance(value, str) or len(value) != 64:
+            raise RealTaskSpecError("review_config_hashes values must be 64-char hex digests")
+        review_hashes[key] = value.lower()
+
     return RealTaskSpec(
         task_id=task_id,
         workspace=workspace,
@@ -126,6 +136,7 @@ def load_real_task_spec(path: Path) -> RealTaskSpec:
         deliverable_paths=tuple(rel_paths),
         verify_command=tuple(verify_argv),
         config_hashes=hashes,
+        review_config_hashes=review_hashes,
         raw=document,
     )
 

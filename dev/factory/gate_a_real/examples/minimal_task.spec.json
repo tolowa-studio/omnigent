@@ -6,8 +6,12 @@
   "deliverable_paths": ["deliverable.txt"],
   "verify_command": ["test", "-f", "deliverable.txt"],
   "config_hashes": {
-    "cli-config.json": "REPLACE_AFTER_PROFILE_MATERIALIZATION",
-    "mcp.json": "REPLACE_AFTER_PROFILE_MATERIALIZATION"
+    "cli-config.json": "REPLACE_AFTER_BUILDER_PROFILE_MATERIALIZATION",
+    "mcp.json": "REPLACE_AFTER_BUILDER_PROFILE_MATERIALIZATION"
+  },
+  "review_config_hashes": {
+    "cli-config.json": "REPLACE_AFTER_REVIEW_PROFILE_MATERIALIZATION",
+    "mcp.json": "REPLACE_AFTER_REVIEW_PROFILE_MATERIALIZATION"
   },
   "spec_sha256": "REPLACE_AFTER_CANONICAL_HASH"
 }

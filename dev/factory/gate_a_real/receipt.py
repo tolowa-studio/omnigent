@@ -125,6 +125,24 @@ def validate_review_only_resume(
                     problems.append(f"frozen file hash drift: {rel}")
         except (OSError, ValueError, TypeError) as exc:
             problems.append(f"freeze manifest unreadable: {exc}")
+    review_profile_path = artifacts / "review.profile.json"
+    if not review_profile_path.is_file():
+        problems.append("review-only requires review.profile.json with pinned review hashes")
+    else:
+        try:
+            recorded_review = json.loads(review_profile_path.read_text(encoding="utf-8"))
+            if not isinstance(recorded_review, dict):
+                raise ValueError("review.profile.json must be an object")
+            for key, expected in spec.review_config_hashes.items():
+                actual = recorded_review.get(key) if isinstance(recorded_review, dict) else None
+                if not isinstance(actual, str) or actual.lower() != expected.lower():
+                    problems.append(f"recorded review config hash drift for {key}")
+            for key in recorded_review:
+                if key not in spec.review_config_hashes:
+                    problems.append(f"unexpected recorded review config fingerprint: {key}")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            problems.append(f"review.profile.json unreadable: {exc}")
+
     builder_meta = artifacts / "builder.meta.json"
     if not builder_meta.is_file():
         problems.append("review-only requires builder.meta.json in artifacts dir")

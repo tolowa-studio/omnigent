@@ -10,14 +10,18 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from dev.factory.gate_a_real.agent_run import (
     AgentRunCapture,
+    builder_stdout_acceptable,
+    review_stdout_forbidden_tool_violations,
     review_stdout_passes,
     run_agent_capture,
 )
 from dev.factory.gate_a_real.constants import (
     BUILD_TIMEOUT_SECONDS,
+    REAL_TASK_CONFIG_KEYS,
     REAL_TASK_ENV,
     REVIEW_TIMEOUT_SECONDS,
     VERIFY_TIMEOUT_SECONDS,
@@ -43,6 +47,7 @@ from dev.factory.gate_a_real.receipt import (
     write_resume_state,
 )
 from dev.factory.gate_a_real.spec import RealTaskSpec, RealTaskSpecError, validate_not_expired
+from dev.factory.gate_a_trial.config_hashes import effective_config_hashes
 from dev.factory.gate_a_trial.cursor_cli_sandbox import (
     GateACursorCliSandbox,
     GateACursorCliSandboxError,
@@ -125,18 +130,63 @@ def _fail_receipt(spec: RealTaskSpec, problems: list[str]) -> RealTaskReceipt:
     )
 
 
-def _validate_config_hashes(spec: RealTaskSpec, observed: dict[str, str]) -> list[str]:
+def _validate_config_hashes(
+    observed: dict[str, str],
+    *,
+    pinned: dict[str, str],
+    label: str,
+) -> list[str]:
     problems: list[str] = []
-    for key, expected in spec.config_hashes.items():
+    for key, expected in pinned.items():
         actual = observed.get(key)
         if actual is None:
-            problems.append(f"missing config fingerprint: {key}")
+            problems.append(f"missing {label} config fingerprint: {key}")
         elif actual.lower() != expected.lower():
-            problems.append(f"config hash drift for {key}")
+            problems.append(f"{label} config hash drift for {key}")
     for key in observed:
-        if key not in spec.config_hashes:
-            problems.append(f"unexpected config artifact fingerprint: {key}")
+        if key not in pinned:
+            problems.append(f"unexpected {label} config artifact fingerprint: {key}")
     return problems
+
+
+def _validate_builder_config_hashes(spec: RealTaskSpec, observed: dict[str, str]) -> list[str]:
+    return _validate_config_hashes(observed, pinned=spec.config_hashes, label="builder")
+
+
+def _validate_review_config_hashes(spec: RealTaskSpec, observed: dict[str, str]) -> list[str]:
+    return _validate_config_hashes(observed, pinned=spec.review_config_hashes, label="review")
+
+
+def _observed_profile_hashes(profile: dict[str, Any]) -> dict[str, str]:
+    cursor_dir = Path(profile["cursor_config_dir"])
+    try:
+        hashes = effective_config_hashes(cursor_config_dir=cursor_dir, workspace_mcp_config=None)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return {key: hashes[key] for key in sorted(REAL_TASK_CONFIG_KEYS) if key in hashes}
+
+
+def _merge_drift_into_receipt_file(artifacts: Path, spec: RealTaskSpec, drift: list[str]) -> None:
+    receipt_path = artifacts / "receipt.json"
+    fail = _fail_receipt(spec, drift)
+    if receipt_path.is_file():
+        try:
+            prev = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if isinstance(prev, dict):
+                fail.builder_session_ids = list(prev.get("builder_session_ids") or [])
+                fail.review_session_ids = list(prev.get("review_session_ids") or [])
+                fail.builder_exit_code = prev.get("builder_exit_code")
+                fail.review_exit_code = prev.get("review_exit_code")
+                fail.verify_exit_code = prev.get("verify_exit_code")
+                fail.deliverable_manifest_sha256 = prev.get("deliverable_manifest_sha256")
+                fail.post_review_manifest_sha256 = prev.get("post_review_manifest_sha256")
+                fail.freeze_manifest_path = prev.get("freeze_manifest_path")
+                fail.builder_log_path = prev.get("builder_log_path")
+                fail.review_log_path = prev.get("review_log_path")
+                fail.verify_log_path = prev.get("verify_log_path")
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    fail.write(receipt_path)
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -205,6 +255,8 @@ def build_agent_argv(
         assert freeze_dir is not None
         lines = [
             "Independent read-only review of a Gate A real-task freeze candidate.",
+            "Use only Read, Grep, and Glob. Do not invoke Shell, Write, Edit, Delete,",
+            "WebFetch, MCP, GetMcpTools, or any other tool, even for discovery.",
             "Inspect the frozen files and verification evidence before deciding.",
             "The LAST line of your final response must be exactly REVIEW: PASS",
             "only if deliverables and verification are acceptable.",
@@ -276,6 +328,11 @@ def _evaluate_builder(capture: AgentRunCapture) -> list[str]:
         problems.append("builder missing Cursor session_id in stream-json")
     if capture.unexpected_mcp_activity:
         problems.append("unexpected MCP tool activity during builder")
+    final_ok, final_reason = builder_stdout_acceptable(capture.stdout)
+    if not final_ok:
+        problems.append(
+            final_reason or "builder missing successful terminal stream-json result event"
+        )
     return problems
 
 
@@ -289,6 +346,7 @@ def _evaluate_review(capture: AgentRunCapture) -> list[str]:
         problems.append("review missing Cursor session_id in stream-json")
     if capture.unexpected_mcp_activity:
         problems.append("unexpected MCP tool activity during review")
+    problems.extend(review_stdout_forbidden_tool_violations(capture.stdout))
     if not review_stdout_passes(capture.stdout):
         problems.append(
             "review did not emit standalone REVIEW: PASS in terminal stream-json result"
@@ -344,17 +402,14 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
     config_parent = Path(tempfile.mkdtemp(prefix="gate-a-real-config-", dir=str(artifacts)))
     review_config_parent: Path | None = None
     sandbox: GateACursorCliSandbox | None = None
+    review_sandbox: GateACursorCliSandbox | None = None
+    profile: dict[str, Any] | None = None
+    review_profile: dict[str, Any] | None = None
+    run_result: RealTaskRunResult | None = None
 
     try:
         profile = materialize_real_task_cursor_config_dir(config_parent)
-        # The pinned config hash describes the original builder environment.
-        # Review-only binds to that recorded build and may use a newer, stricter
-        # review profile without pretending the builder ran under today's profile.
-        config_problems = (
-            []
-            if options.review_only
-            else _validate_config_hashes(spec, profile["effective_config_hashes"])
-        )
+        config_problems = _validate_builder_config_hashes(spec, profile["effective_config_hashes"])
         if config_problems:
             receipt = _fail_receipt(spec, config_problems)
             receipt.write(artifacts / "receipt.json")
@@ -375,10 +430,15 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.write(artifacts / "receipt.json")
             return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
 
-        env = real_task_cursor_cli_env(
-            cursor_config_dir=profile["cursor_config_dir"],
-            home_dir=str(home),
-        )
+        try:
+            env = real_task_cursor_cli_env(
+                cursor_config_dir=profile["cursor_config_dir"],
+                home_dir=str(home),
+            )
+        except ValueError as exc:
+            receipt = _fail_receipt(spec, [str(exc)])
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
         try:
             workspace_mcp_before = _workspace_mcp_fingerprint(spec.workspace)
         except (RealTaskGateError, OSError) as exc:
@@ -600,14 +660,66 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             tempfile.mkdtemp(prefix="gate-a-review-config-", dir=str(artifacts))
         )
         review_profile = materialize_real_task_review_config_dir(review_config_parent)
+        review_config_problems = _validate_review_config_hashes(
+            spec, review_profile["effective_config_hashes"]
+        )
+        if review_config_problems:
+            problems.extend(review_config_problems)
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
         _write_text(
             artifacts / "review.profile.json",
             json.dumps(review_profile["effective_config_hashes"], indent=2, sort_keys=True) + "\n",
         )
-        review_env = real_task_cursor_cli_env(
-            cursor_config_dir=review_profile["cursor_config_dir"],
-            home_dir=str(home),
-        )
+
+        review_home_parent = artifacts / "isolated-review-home-parent"
+        review_home = materialize_isolated_home(review_home_parent)
+        review_home_problems = pre_enable_home_must_be_pristine(review_home)
+        if review_home_problems:
+            problems.extend(review_home_problems)
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
+
+        try:
+            review_sandbox = prepare_gate_a_cursor_cli_sandbox(review_home)
+        except GateACursorCliSandboxError as exc:
+            problems.append(str(exc))
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
+
+        try:
+            review_env = real_task_cursor_cli_env(
+                cursor_config_dir=review_profile["cursor_config_dir"],
+                home_dir=str(review_home),
+            )
+        except ValueError as exc:
+            problems.append(str(exc))
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
 
         try:
             mcp_config_unchanged = (
@@ -621,7 +733,7 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             cursor_executable,
             str(spec.workspace),
             review_env,
-            gate_a_sandbox=sandbox,
+            gate_a_sandbox=review_sandbox,
         )
         _write_text(
             artifacts / "mcp_review_preflight.json",
@@ -632,6 +744,34 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
                 review_mcp_gate.get("gate_failure_reasons") or ["review MCP preflight failed"]
             )
         if problems:
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
+
+        builder_config_drift = _validate_builder_config_hashes(
+            spec, _observed_profile_hashes(profile)
+        )
+        if builder_config_drift:
+            problems.extend(builder_config_drift)
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            receipt.write(artifacts / "receipt.json")
+            return RealTaskRunResult(receipt=receipt, problems=problems)
+
+        review_config_drift = _validate_review_config_hashes(
+            spec, _observed_profile_hashes(review_profile)
+        )
+        if review_config_drift:
+            problems.extend(review_config_drift)
             receipt = _fail_receipt(spec, problems)
             receipt.builder_session_ids = builder_session_ids
             receipt.builder_exit_code = builder_exit_code
@@ -658,7 +798,7 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             cwd=str(spec.workspace),
             env=review_env,
             timeout_seconds=REVIEW_TIMEOUT_SECONDS,
-            sandbox_argv_wrapper=_sandbox_prefix(sandbox, review_argv),
+            sandbox_argv_wrapper=_sandbox_prefix(review_sandbox, review_argv),
             stdout_log=review_stdout_log,
             stderr_log=review_stderr_log,
         )
@@ -671,15 +811,15 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         except (RealTaskGateError, OSError) as exc:
             problems.append(str(exc))
 
+        post_manifest_sha256: str | None = None
+        post_inventory: DeliverableInventory | None = None
         try:
             post_inventory = collect_deliverables(spec.workspace, spec.deliverable_paths)
+            post_manifest_sha256 = post_inventory.manifest_sha256
         except (OSError, ValueError) as exc:
             problems.append(f"post-review deliverable scan failed: {exc}")
-            post_inventory = inventory
 
-        scan_ok = not any(
-            problem.startswith("post-review deliverable scan failed:") for problem in problems
-        )
+        scan_ok = post_inventory is not None
         mutation_ok = scan_ok and inventories_match(inventory, post_inventory)
         if not mutation_ok:
             problems.append("deliverables changed after review (post-review mutation)")
@@ -692,8 +832,8 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         if not frozen_intact:
             problems.append("frozen candidate changed during review")
 
-        review_pass = not review_problems and mutation_ok and not problems
-        ok = builder_ok and review_pass
+        review_pass = not review_problems and mutation_ok and scan_ok and frozen_intact
+        ok = builder_ok and review_pass and not problems
 
         receipt = RealTaskReceipt(
             ok=ok,
@@ -707,7 +847,7 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             review_exit_code=review_capture.exit_code,
             verify_exit_code=verify_code,
             deliverable_manifest_sha256=inventory.manifest_sha256,
-            post_review_manifest_sha256=post_inventory.manifest_sha256,
+            post_review_manifest_sha256=post_manifest_sha256,
             freeze_manifest_path=str(freeze_manifest),
             review_pass=review_pass,
             completed_at=utc_now_iso(),
@@ -727,16 +867,35 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
                 "builder_stdout_sha256": builder_stdout_sha,
                 "deliverable_manifest_sha256": inventory.manifest_sha256,
                 "freeze_manifest_sha256": freeze_sha,
-                "post_review_manifest_sha256": post_inventory.manifest_sha256,
+                "post_review_manifest_sha256": post_manifest_sha256,
                 "verify_exit_code": verify_code,
                 "review_pass": receipt.review_pass,
                 "receipt_ok": receipt.ok,
             },
         )
-        return RealTaskRunResult(receipt=receipt, problems=problems)
+        run_result = RealTaskRunResult(receipt=receipt, problems=problems)
+        return run_result  # noqa: RET504 — keep reference for config-drift finally hook
     finally:
+        drift: list[str] = []
+        if profile is not None:
+            drift.extend(_validate_builder_config_hashes(spec, _observed_profile_hashes(profile)))
+        if review_profile is not None:
+            drift.extend(
+                _validate_review_config_hashes(spec, _observed_profile_hashes(review_profile))
+            )
+        if drift:
+            _merge_drift_into_receipt_file(artifacts, spec, drift)
+            if run_result is not None:
+                run_result.receipt.ok = False
+                run_result.receipt.review_pass = False
+                for item in drift:
+                    if item not in run_result.problems:
+                        run_result.problems.append(item)
+                run_result.receipt.problems = list(run_result.problems)
         if sandbox is not None:
             sandbox.cleanup()
+        if review_sandbox is not None:
+            review_sandbox.cleanup()
         shutil.rmtree(config_parent, ignore_errors=True)
         if review_config_parent is not None:
             shutil.rmtree(review_config_parent, ignore_errors=True)
