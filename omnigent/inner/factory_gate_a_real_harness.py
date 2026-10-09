@@ -18,7 +18,7 @@ from omnigent.factory.gate_a.real_chat import (
     latest_user_message_text,
     parse_operator_command,
     read_status_summary,
-    resolve_bound_paths,
+    resolve_task_paths,
     run_approved_task_with_heartbeat,
     usage_hint,
 )
@@ -60,17 +60,17 @@ class FactoryGateARealExecutor(Executor):
                 )
             )
             return
-        try:
-            spec_path, artifacts_dir = resolve_bound_paths()
-        except ValueError as exc:
-            yield ExecutorError(message=str(exc))
-            return
-
         user_text = latest_user_message_text(messages)
         command = parse_operator_command(user_text)
         if command is None:
             yield TextChunk(text=usage_hint())
             yield TurnComplete(response=None)
+            return
+
+        try:
+            spec_path, artifacts_dir = resolve_task_paths(command.task_id)
+        except ValueError as exc:
+            yield ExecutorError(message=str(exc))
             return
 
         if command.kind == "status":

@@ -24,16 +24,57 @@ export OMNIGENT_FACTORY_GATE_A_REAL_SPEC=/absolute/path/to/task.spec.json
 export OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS=/absolute/path/to/artifacts-dir
 ```
 
+#### Multi-task registry (local beta)
+
+Run or review **multiple** operator-prepared specs from one long-lived host without
+restarting for each task. Pin directories at startup (not per chat message):
+
+```bash
+export OMNIGENT_FACTORY_GATE_A_REAL_TASK=1
+export OMNIGENT_FACTORY_GATE_A_REAL_CHAT=1
+export OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR=/absolute/path/to/approved-specs
+export OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT=/absolute/path/to/artifact-roots
+```
+
+Layout:
+
+- `OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR/<task_id>.json` — hash-bound spec (one file
+  per task; filename must match `task_id` inside the JSON)
+- `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT/<task_id>/` — isolated artifacts for
+  that task (`receipt.json`, builder logs, etc.)
+
+Chat commands are unchanged (`run approved task <task_id>`, `review approved task
+<task_id>`, `status <task_id>`). Task IDs are validated strictly (no paths,
+separators, or whitespace). Symlinks, traversal, missing specs, and mismatched
+`task_id` in the spec file are rejected before any run.
+
+Do **not** set `OMNIGENT_FACTORY_GATE_A_REAL_SPEC` / `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS`
+together with the registry vars; use either single-spec binding or registry binding.
+
+When using `omnigent.cli host`, extend passthrough on the **host** shell:
+
+```bash
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,CLOUDSDK_CONFIG
+```
+
+Single-spec mode passthrough (unchanged):
+
+```bash
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS,CLOUDSDK_CONFIG
+```
+
 Bind an agent spec with `executor.harness: factory-gate-a-real` (the harness id is
 accepted by spec validation even when the subprocess registry is off). The harness
 process is registered only when **both** env vars above are set at Omnigent
 startup. In chat, use exact operator commands (model tool calls cannot change
 paths or task IDs):
 
-- `run approved task <task_id>` — runs the pinned spec when `<task_id>` matches
+- `run approved task <task_id>` — runs the bound spec when `<task_id>` matches
+  (single-spec: one file; registry: `<task_id>.json` under the spec dir)
 - `review approved task <task_id>` — review-only resume (same bound spec and
-  artifacts dir; does not rerun the builder)
-- `status <task_id>` — read-only `receipt.json` summary (never starts a run)
+  artifacts dir for that task; does not rerun the builder)
+- `status <task_id>` — read-only `receipt.json` summary (never starts a run);
+  verifies receipt `task_id`, `spec_sha256`, and `workspace` against the bound spec
 
 `status` fails closed on malformed receipts or when `task_id`, `spec_sha256`, or
 `workspace` in `receipt.json` do not match the bound spec. The chat summary shows
