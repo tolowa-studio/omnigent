@@ -34,6 +34,7 @@ RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
 ORDER_SUBMIT_PREFIX = "order submit "
 ORDER_START_PREFIX = "order start "
+ORDER_CANCEL_PREFIX = "order cancel "
 ORDER_STATUS_PREFIX = "order status "
 STATUS_PREFIX = "status "
 
@@ -42,7 +43,9 @@ _HEARTBEAT_INTERVAL_S = 30.0
 
 @dataclass(frozen=True)
 class OperatorCommand:
-    kind: Literal["run", "review", "status", "order_status", "order_submit", "order_start"]
+    kind: Literal[
+        "run", "review", "status", "order_status", "order_submit", "order_start", "order_cancel"
+    ]
     task_id: str
 
 
@@ -119,6 +122,10 @@ def parse_operator_command(text: str) -> OperatorCommand | None:
         order_id = stripped[len(ORDER_START_PREFIX) :].strip()
         if order_id and " " not in order_id:
             return OperatorCommand(kind="order_start", task_id=order_id)
+    if stripped.startswith(ORDER_CANCEL_PREFIX):
+        order_id = stripped[len(ORDER_CANCEL_PREFIX) :].strip()
+        if order_id and " " not in order_id:
+            return OperatorCommand(kind="order_cancel", task_id=order_id)
     if stripped.startswith(ORDER_STATUS_PREFIX):
         order_id = stripped[len(ORDER_STATUS_PREFIX) :].strip()
         if order_id and " " not in order_id:
@@ -407,6 +414,7 @@ def usage_hint() -> str:
         "  order status <order_id>  (Motion Core snapshot; requires motion pin env vars)\n"
         "  order submit <task_id>  (Motion Core draft new; opt-in submit + contracts dir)\n"
         "  order start <order_id>  (Motion Core launch; opt-in start + local approval file)\n"
+        "  order cancel <order_id>  (Motion Core cancel; explicit local-beta opt-in)\n"
         "Spec and artifacts roots are pinned by operator env vars at host startup; "
         "the model cannot override paths or task binding.\n"
     )

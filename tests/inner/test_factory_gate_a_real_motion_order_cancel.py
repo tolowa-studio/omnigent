@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from dev.factory.gate_a_real.constants import REAL_TASK_ENV
 from omnigent.factory.gate_a.motion_order_cancel import (
     MOTION_ORDER_CANCEL_ENABLE_ENV,
     cancel_motion_order,
@@ -16,6 +17,14 @@ from omnigent.factory.gate_a.motion_order_status import (
     MOTION_CORE_ROOT_ENV,
     MOTION_ORDERS_ROOT_ENV,
 )
+from omnigent.factory.gate_a.real_chat import (
+    REAL_TASK_CHAT_ENV,
+    OperatorCommand,
+    parse_operator_command,
+)
+from omnigent.inner.datamodel import Message
+from omnigent.inner.executor import ExecutorError, TextChunk
+from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 
 _ORDER_ID = "ord-fixture-123"
 
@@ -39,6 +48,15 @@ def _cancel_env(tmp_path: Path) -> dict[str, str]:
 
 def _completed(payload: object) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
+
+
+def test_parse_operator_command_order_cancel_exact() -> None:
+    assert parse_operator_command(f"order cancel {_ORDER_ID}") == OperatorCommand(
+        kind="order_cancel", task_id=_ORDER_ID
+    )
+    assert parse_operator_command("order cancel") is None
+    assert parse_operator_command(f"order cancel {_ORDER_ID} extra") is None
+    assert parse_operator_command(f"ORDER cancel {_ORDER_ID}") is None
 
 
 def test_cancel_is_disabled_by_default_and_requires_pins(tmp_path: Path) -> None:
@@ -147,3 +165,30 @@ def test_cancel_timeout_is_bounded_and_sanitized(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="order cancel timed out"):
         cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+
+
+@pytest.mark.asyncio
+async def test_executor_order_cancel_calls_local_beta_bridge_without_start_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    monkeypatch.setenv(REAL_TASK_CHAT_ENV, "1")
+    observed: list[str] = []
+
+    def injected_cancel(order_id: str) -> str:
+        observed.append(order_id)
+        return "order_cancel_ok: true\noutcome: cancel_requested\n"
+
+    monkeypatch.setattr(
+        "omnigent.inner.factory_gate_a_real_harness.cancel_motion_order", injected_cancel
+    )
+    events: list[object] = []
+    async for event in FactoryGateARealExecutor().run_turn(
+        [Message(role="user", content=f"order cancel {_ORDER_ID}")], [], ""
+    ):
+        events.append(event)
+    assert observed == [_ORDER_ID]
+    assert any(
+        isinstance(event, TextChunk) and "cancel_requested" in event.text for event in events
+    )
+    assert not any(isinstance(event, ExecutorError) for event in events)
