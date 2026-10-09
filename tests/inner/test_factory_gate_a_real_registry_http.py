@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from dev.factory.gate_a_real.constants import REAL_TASK_ENV
+from dev.factory.gate_a_real.deliverables import collect_deliverables
 from dev.factory.gate_a_real.orchestration import RealTaskRunResult
 from dev.factory.gate_a_real.profile import (
     materialize_real_task_cursor_config_dir,
@@ -95,12 +96,23 @@ def _sample_receipt(
 
 def _receipt_for_spec(spec_path: Path, *, ok: bool = True) -> RealTaskReceipt:
     spec = load_real_task_spec(spec_path)
-    return _sample_receipt(
+    receipt = _sample_receipt(
         task_id=spec.task_id,
         ok=ok,
         spec_sha256=spec.spec_sha256,
         workspace=str(spec.workspace),
     )
+    if ok:
+        workspace = Path(spec.workspace)
+        for relpath in spec.deliverable_paths:
+            deliverable = workspace / relpath
+            deliverable.parent.mkdir(parents=True, exist_ok=True)
+            if not deliverable.exists():
+                deliverable.write_text("deliverable body\n", encoding="utf-8")
+        manifest_sha = collect_deliverables(workspace, spec.deliverable_paths).manifest_sha256
+        receipt.deliverable_manifest_sha256 = manifest_sha
+        receipt.post_review_manifest_sha256 = manifest_sha
+    return receipt
 
 
 def _bind_registry_env(
