@@ -50,8 +50,11 @@ below): `order status <order_id>`. Opt-in draft submit is available when
 `OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1` and task contracts are pinned (see
 below): `order submit <task_id>`. Opt-in order start is available when
 `OMNIGENT_FACTORY_MOTION_ORDER_START=1` and local approval files are pinned
-(see below): `order start <order_id>`. Cancel, merge, and deployment are
-**not** implemented in this harness.
+(see below): `order start <order_id>`. Local-beta cancellation is available only
+with the separate `OMNIGENT_FACTORY_MOTION_ORDER_CANCEL=1` host opt-in and the
+exact operator command `order cancel <order_id>`; production authorization for
+cancellation remains pending. Merge and deployment are **not** implemented in
+this harness.
 
 Task IDs are validated strictly (no paths, separators, or whitespace). Symlinks,
 traversal, missing specs, and mismatched `task_id` in the spec file are
@@ -164,18 +167,48 @@ Chat command (exact):
 order start <order_id>
 ```
 
+#### Motion Core order cancel (phase-2 bridge, local beta)
+
+Default **off**. Cancellation requires both the explicit host opt-in below and
+the exact operator command `order cancel <order_id>`. Together they authorize
+this local-beta cancellation path. It is independent of order start and does
+not read or require the order-start approval file. Production authorization
+for cancellation remains pending.
+
+```bash
+export OMNIGENT_FACTORY_MOTION_ORDER_CANCEL=1
+export OMNIGENT_FACTORY_MOTION_CORE_ROOT=/absolute/path/to/motion-core
+export OMNIGENT_FACTORY_MOTION_ORDERS_ROOT=/absolute/path/to/orders
+```
+
+Chat command (exact):
+
+```text
+order cancel <order_id>
+```
+
+The harness calls the pinned Core CLI `cancel <order_id> --orders-root
+<orders_root> --json` with a short timeout (15s) and minimal environment. It
+reports only Core outcomes `cancelled`, `cancel_requested`, or
+`already_completed`. `cancel_requested` does not mean the worker stopped; worker
+termination is reported only when Core JSON includes `worker_signal.ok: true`.
+If the CLI times out, exits nonzero, fails to start, or returns unusable JSON,
+the bridge does not assert cancel outcome (Core may still have written a cancel
+marker); use `order status <order_id>` to inspect. Production authorization for
+cancellation remains pending.
+
 When using `omnigent.cli host`, include the motion pins in passthrough together
 with the Gate A binding vars. Append `,CLOUDSDK_CONFIG` only if Cursor auth on
 the host uses that config path (omit otherwise). For example:
 
 ```bash
-export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT,OMNIGENT_FACTORY_MOTION_ORDER_START,OMNIGENT_FACTORY_MOTION_ORDER_APPROVALS_DIR,OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT,OMNIGENT_FACTORY_MOTION_ORDER_START,OMNIGENT_FACTORY_MOTION_ORDER_CANCEL,OMNIGENT_FACTORY_MOTION_ORDER_APPROVALS_DIR,OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
 ```
 
 Single-spec passthrough example:
 
 ```bash
-export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS,OMNIGENT_FACTORY_MOTION_ORDER_CANCEL,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
 ```
 
 Bind an agent spec with `executor.harness: factory-gate-a-real` (the harness id is
@@ -199,6 +232,10 @@ paths or task IDs):
 - `order start <order_id>` — Motion Core `start --execute-direct-path` when
   `OMNIGENT_FACTORY_MOTION_ORDER_START=1`, approvals dir, and motion pins are
   set (does not use Gate A spec/artifacts binding)
+- `order cancel <order_id>` — Motion Core cancel when
+  `OMNIGENT_FACTORY_MOTION_ORDER_CANCEL=1` and motion pins are set (does not
+  use Gate A spec/artifacts binding or the order-start approval file;
+  production authorization remains pending)
 
 `status` fails closed on malformed receipts or when `task_id`, `spec_sha256`, or
 `workspace` in `receipt.json` do not match the bound spec. The chat summary shows
