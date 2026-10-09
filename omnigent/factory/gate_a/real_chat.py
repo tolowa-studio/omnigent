@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,10 @@ from omnigent.inner.executor import ExecutorEvent, TextChunk
 REAL_TASK_CHAT_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_CHAT"
 REAL_TASK_SPEC_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_SPEC"
 REAL_TASK_ARTIFACTS_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS"
+REAL_TASK_SPEC_DIR_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR"
+REAL_TASK_ARTIFACTS_ROOT_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT"
+
+_OPERATOR_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
@@ -118,31 +123,150 @@ def parse_operator_command(text: str) -> OperatorCommand | None:
     return None
 
 
-def _require_absolute_dir(raw: str, label: str) -> Path:
+def validate_operator_task_id(task_id: str) -> None:
+    if not _OPERATOR_TASK_ID_RE.fullmatch(task_id):
+        raise ValueError(
+            "task_id must be a single token of letters, digits, '.', '_', or '-' "
+            "(no whitespace or path separators)"
+        )
+
+
+def _reject_symlink_along_path(path: Path, *, under_root: Path | None = None) -> None:
+    """Reject symlinks on existing components along a lexical path (before resolve).
+
+    Path checks assume operator-controlled pinned directories at host startup; they
+    do not provide race-free isolation against concurrent symlink creation.
+    """
+    if under_root is not None:
+        if under_root.is_symlink():
+            raise ValueError(f"symlink not allowed under pinned root: {under_root}")
+        try:
+            relative = path.relative_to(under_root)
+        except ValueError:
+            return
+        cursor = under_root
+        for part in relative.parts:
+            cursor = cursor / part
+            if cursor.is_symlink():
+                raise ValueError(f"symlink not allowed under pinned root: {cursor}")
+        return
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError(f"symlink not allowed: {cursor}")
+
+
+def _require_absolute_dir(raw: str, label: str, *, must_exist: bool = True) -> Path:
     value = raw.strip()
     if not value:
         raise ValueError(f"{label} must be a non-empty absolute path")
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise ValueError(f"{label} must be an absolute path")
-    return path.resolve()
+    _reject_symlink_along_path(path)
+    resolved = path.resolve()
+    if must_exist and not resolved.is_dir():
+        raise ValueError(f"{label} is not a directory: {resolved}")
+    return resolved
+
+
+def _assert_under_root(path: Path, root: Path, *, label: str) -> Path:
+    root_resolved = root.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise ValueError(f"{label} escapes pinned root {root_resolved}") from None
+    _reject_symlink_along_path(path, under_root=root)
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root_resolved):
+        raise ValueError(f"{label} escapes pinned root {root_resolved}")
+    return resolved
+
+
+def _binding_mode(env: dict[str, str]) -> Literal["single", "registry"]:
+    spec_file = env.get(REAL_TASK_SPEC_ENV, "").strip()
+    spec_dir = env.get(REAL_TASK_SPEC_DIR_ENV, "").strip()
+    artifacts_file = env.get(REAL_TASK_ARTIFACTS_ENV, "").strip()
+    artifacts_root = env.get(REAL_TASK_ARTIFACTS_ROOT_ENV, "").strip()
+    if spec_file and spec_dir:
+        raise ValueError(
+            f"set either {REAL_TASK_SPEC_ENV} (single-spec) or "
+            f"{REAL_TASK_SPEC_DIR_ENV} (registry), not both"
+        )
+    if artifacts_file and artifacts_root:
+        raise ValueError(
+            f"set either {REAL_TASK_ARTIFACTS_ENV} (single-spec) or "
+            f"{REAL_TASK_ARTIFACTS_ROOT_ENV} (registry), not both"
+        )
+    if spec_file:
+        return "single"
+    if spec_dir:
+        return "registry"
+    raise ValueError(
+        f"{REAL_TASK_SPEC_ENV} or {REAL_TASK_SPEC_DIR_ENV} is required "
+        f"(operator-pinned binding at host startup)"
+    )
 
 
 def resolve_bound_paths(environ: dict[str, str] | None = None) -> tuple[Path, Path]:
-    env = environ if environ is not None else os.environ
+    """Single-spec compatibility binding (one spec file + one artifacts directory)."""
+    env = dict(environ) if environ is not None else dict(os.environ)
+    if _binding_mode(env) != "single":
+        raise ValueError(
+            f"{REAL_TASK_SPEC_ENV} and {REAL_TASK_ARTIFACTS_ENV} are required "
+            f"for single-spec binding"
+        )
     spec_raw = env.get(REAL_TASK_SPEC_ENV, "")
     artifacts_raw = env.get(REAL_TASK_ARTIFACTS_ENV, "")
-    if not spec_raw.strip():
-        raise ValueError(f"{REAL_TASK_SPEC_ENV} is required")
     if not artifacts_raw.strip():
         raise ValueError(f"{REAL_TASK_ARTIFACTS_ENV} is required")
     spec_path = Path(spec_raw.strip()).expanduser()
     if not spec_path.is_absolute():
         raise ValueError(f"{REAL_TASK_SPEC_ENV} must be an absolute path")
+    _reject_symlink_along_path(spec_path)
     spec_path = spec_path.resolve()
     if not spec_path.is_file():
         raise ValueError(f"spec file not found: {spec_path}")
-    artifacts_dir = _require_absolute_dir(artifacts_raw, REAL_TASK_ARTIFACTS_ENV)
+    artifacts_dir = _require_absolute_dir(
+        artifacts_raw,
+        REAL_TASK_ARTIFACTS_ENV,
+        must_exist=False,
+    )
+    return spec_path, artifacts_dir
+
+
+def _resolve_registry_roots(env: dict[str, str]) -> tuple[Path, Path]:
+    spec_dir_raw = env.get(REAL_TASK_SPEC_DIR_ENV, "").strip()
+    artifacts_root_raw = env.get(REAL_TASK_ARTIFACTS_ROOT_ENV, "").strip()
+    if not spec_dir_raw:
+        raise ValueError(f"{REAL_TASK_SPEC_DIR_ENV} is required for registry binding")
+    if not artifacts_root_raw:
+        raise ValueError(f"{REAL_TASK_ARTIFACTS_ROOT_ENV} is required for registry binding")
+    spec_root = _require_absolute_dir(spec_dir_raw, REAL_TASK_SPEC_DIR_ENV)
+    artifacts_root = _require_absolute_dir(artifacts_root_raw, REAL_TASK_ARTIFACTS_ROOT_ENV)
+    return spec_root, artifacts_root
+
+
+def resolve_task_paths(
+    task_id: str,
+    environ: dict[str, str] | None = None,
+) -> tuple[Path, Path]:
+    """Resolve spec and artifacts paths for an operator command task_id."""
+    validate_operator_task_id(task_id)
+    env = dict(environ) if environ is not None else dict(os.environ)
+    mode = _binding_mode(env)
+    if mode == "single":
+        return resolve_bound_paths(env)
+    spec_root, artifacts_root = _resolve_registry_roots(env)
+    spec_path = _assert_under_root(spec_root / f"{task_id}.json", spec_root, label="spec path")
+    if not spec_path.is_file():
+        raise ValueError(f"spec file not found for task_id {task_id!r}: {spec_path}")
+    artifacts_dir = _assert_under_root(
+        artifacts_root / task_id,
+        artifacts_root,
+        label="artifacts path",
+    )
     return spec_path, artifacts_dir
 
 
@@ -265,7 +389,8 @@ def usage_hint() -> str:
         "  run approved task <task_id>\n"
         "  review approved task <task_id>\n"
         "  status <task_id>\n"
-        "Paths and spec are pinned by operator env vars; the model cannot override them.\n"
+        "Spec and artifacts roots are pinned by operator env vars at host startup; "
+        "the model cannot override paths or task binding.\n"
     )
 
 

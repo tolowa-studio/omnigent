@@ -19,7 +19,9 @@ from dev.factory.gate_a_real.receipt import RealTaskReceipt, utc_now_iso
 from dev.factory.gate_a_real.spec import canonical_spec_sha256, load_real_task_spec
 from omnigent.factory.gate_a.real_chat import (
     REAL_TASK_ARTIFACTS_ENV,
+    REAL_TASK_ARTIFACTS_ROOT_ENV,
     REAL_TASK_CHAT_ENV,
+    REAL_TASK_SPEC_DIR_ENV,
     REAL_TASK_SPEC_ENV,
     OperatorCommand,
     factory_gate_a_real_enabled,
@@ -28,6 +30,8 @@ from omnigent.factory.gate_a.real_chat import (
     parse_operator_command,
     read_status_summary,
     resolve_bound_paths,
+    resolve_task_paths,
+    validate_operator_task_id,
 )
 from omnigent.harness_plugins import valid_harnesses
 from omnigent.inner.datamodel import Message
@@ -39,7 +43,13 @@ from omnigent.spec.types import ExecutorSpec, LLMConfig
 from omnigent.spec.validator import validate
 
 
-def _write_spec(tmp_path: Path, workspace: Path, task_id: str = "unit-task") -> Path:
+def _write_spec(
+    tmp_path: Path,
+    workspace: Path,
+    task_id: str = "unit-task",
+    *,
+    spec_dir: Path | None = None,
+) -> Path:
     profile_dir = tmp_path / "profile"
     profile = materialize_real_task_cursor_config_dir(profile_dir)
     review_profile = materialize_real_task_review_config_dir(tmp_path / "review-profile")
@@ -54,9 +64,27 @@ def _write_spec(tmp_path: Path, workspace: Path, task_id: str = "unit-task") -> 
         "review_config_hashes": review_profile["effective_config_hashes"],
     }
     spec["spec_sha256"] = canonical_spec_sha256(spec)
-    path = tmp_path / "task.spec.json"
+    if spec_dir is not None:
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        path = spec_dir / f"{task_id}.json"
+    else:
+        path = tmp_path / "task.spec.json"
     path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def _bind_registry_env(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    spec_root: Path,
+    artifacts_root: Path,
+) -> None:
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    monkeypatch.setenv(REAL_TASK_CHAT_ENV, "1")
+    monkeypatch.delenv(REAL_TASK_SPEC_ENV, raising=False)
+    monkeypatch.delenv(REAL_TASK_ARTIFACTS_ENV, raising=False)
+    monkeypatch.setenv(REAL_TASK_SPEC_DIR_ENV, str(spec_root))
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ROOT_ENV, str(artifacts_root))
 
 
 def _sample_receipt(
@@ -210,6 +238,15 @@ def test_latest_user_message_accepts_executor_adapter_dicts() -> None:
     assert latest_user_message_text([{"role": 1, "content": prompt}]) == ""
 
 
+def test_validate_operator_task_id_rejects_traversal() -> None:
+    with pytest.raises(ValueError, match="task_id"):
+        validate_operator_task_id("../evil")
+    with pytest.raises(ValueError, match="task_id"):
+        validate_operator_task_id("a/b")
+    with pytest.raises(ValueError, match="task_id"):
+        validate_operator_task_id("has space")
+
+
 def test_parse_operator_command_exact() -> None:
     assert parse_operator_command("run approved task my-task") == OperatorCommand(
         kind="run", task_id="my-task"
@@ -240,11 +277,157 @@ def test_resolve_bound_paths_requires_absolute(
         resolve_bound_paths()
 
 
-def test_resolve_bound_paths_missing_spec(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_bound_paths_missing_spec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
     monkeypatch.setenv(REAL_TASK_SPEC_ENV, "/no/such/spec.json")
-    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, "/tmp/artifacts")
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts))
     with pytest.raises(ValueError, match="not found"):
         resolve_bound_paths()
+
+
+def test_resolve_task_paths_registry_isolates_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_root = tmp_path / "specs"
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    _write_spec(tmp_path, workspace, task_id="task-a", spec_dir=spec_root)
+    _write_spec(tmp_path, workspace, task_id="task-b", spec_dir=spec_root)
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+
+    spec_a, art_a = resolve_task_paths("task-a")
+    spec_b, art_b = resolve_task_paths("task-b")
+    assert spec_a.name == "task-a.json"
+    assert spec_b.name == "task-b.json"
+    assert art_a == artifacts_root / "task-a"
+    assert art_b == artifacts_root / "task-b"
+    assert art_a != art_b
+
+
+def test_resolve_task_paths_registry_rejects_in_root_spec_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_root = tmp_path / "specs"
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    canonical = _write_spec(tmp_path, workspace, task_id="canonical", spec_dir=spec_root)
+    (spec_root / "task-a.json").symlink_to(canonical.name)
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_task_paths("task-a")
+
+
+def test_resolve_task_paths_registry_rejects_artifacts_symlink_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_root = tmp_path / "specs"
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    _write_spec(tmp_path, workspace, task_id="task-a", spec_dir=spec_root)
+    (artifacts_root / "real-dir").mkdir()
+    (artifacts_root / "task-a").symlink_to("real-dir", target_is_directory=True)
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_task_paths("task-a")
+
+
+def test_resolve_bound_paths_rejects_spec_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    real_spec = _write_spec(tmp_path, workspace)
+    link = tmp_path / "task.spec.link.json"
+    link.symlink_to(real_spec)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv(REAL_TASK_SPEC_ENV, str(link))
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts))
+
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_bound_paths()
+
+
+def test_resolve_bound_paths_accepts_non_symlink_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    monkeypatch.setenv(REAL_TASK_SPEC_ENV, str(spec_path))
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts))
+
+    resolved_spec, resolved_art = resolve_bound_paths()
+    assert resolved_spec == spec_path.resolve()
+    assert resolved_art == artifacts.resolve()
+
+
+@pytest.mark.asyncio
+async def test_registry_rejects_spec_symlink_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_root = tmp_path / "specs"
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    canonical = _write_spec(tmp_path, workspace, task_id="canonical", spec_dir=spec_root)
+    (spec_root / "task-a.json").symlink_to(canonical.name)
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+
+    events = await _collect_events(FactoryGateARealExecutor(), "status task-a")
+    assert any(isinstance(e, ExecutorError) and "symlink" in e.message for e in events)
+
+
+@pytest.mark.asyncio
+async def test_registry_status_per_task_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_root = tmp_path / "specs"
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    spec_a = _write_spec(tmp_path, workspace, task_id="task-a", spec_dir=spec_root)
+    spec_b = _write_spec(tmp_path, workspace, task_id="task-b", spec_dir=spec_root)
+    art_a = artifacts_root / "task-a"
+    art_b = artifacts_root / "task-b"
+    art_a.mkdir()
+    art_b.mkdir()
+    _receipt_for_spec(spec_a, ok=True).write(art_a / "receipt.json")
+    _receipt_for_spec(spec_b, ok=False).write(art_b / "receipt.json")
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+
+    events_a = await _collect_events(FactoryGateARealExecutor(), "status task-a")
+    events_b = await _collect_events(FactoryGateARealExecutor(), "status task-b")
+    text_a = "".join(e.text for e in events_a if isinstance(e, TextChunk))
+    text_b = "".join(e.text for e in events_b if isinstance(e, TextChunk))
+    assert "receipt_ok: True" in text_a
+    assert "receipt_ok: False" in text_b
+
+
+@pytest.mark.asyncio
+async def test_registry_rejects_invalid_task_id_before_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec_root = tmp_path / "specs"
+    spec_root.mkdir()
+    artifacts_root = tmp_path / "artifact-roots"
+    artifacts_root.mkdir()
+    _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
+    events = await _collect_events(FactoryGateARealExecutor(), "status ../evil")
+    assert any(isinstance(e, ExecutorError) and "task_id" in e.message for e in events)
 
 
 @pytest.mark.asyncio
