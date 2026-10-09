@@ -766,6 +766,7 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
             "copilot",
             "cursor",
             "cursor-native",
+            "factory-gate-a-real",
             "devin-native",
             "goose",
             "goose-native",
