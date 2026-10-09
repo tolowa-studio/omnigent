@@ -32,6 +32,7 @@ _OPERATOR_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
+ORDER_STATUS_PREFIX = "order status "
 STATUS_PREFIX = "status "
 
 _HEARTBEAT_INTERVAL_S = 30.0
@@ -39,7 +40,7 @@ _HEARTBEAT_INTERVAL_S = 30.0
 
 @dataclass(frozen=True)
 class OperatorCommand:
-    kind: Literal["run", "review", "status"]
+    kind: Literal["run", "review", "status", "order_status"]
     task_id: str
 
 
@@ -108,6 +109,10 @@ def latest_user_message_text(messages: Sequence[Message | dict[str, object]]) ->
 
 def parse_operator_command(text: str) -> OperatorCommand | None:
     stripped = text.strip()
+    if stripped.startswith(ORDER_STATUS_PREFIX):
+        order_id = stripped[len(ORDER_STATUS_PREFIX) :].strip()
+        if order_id and " " not in order_id:
+            return OperatorCommand(kind="order_status", task_id=order_id)
     if stripped.startswith(RUN_APPROVED_PREFIX):
         task_id = stripped[len(RUN_APPROVED_PREFIX) :].strip()
         if task_id and " " not in task_id:
@@ -389,6 +394,7 @@ def usage_hint() -> str:
         "  run approved task <task_id>\n"
         "  review approved task <task_id>\n"
         "  status <task_id>\n"
+        "  order status <order_id>  (Motion Core snapshot; requires motion pin env vars)\n"
         "Spec and artifacts roots are pinned by operator env vars at host startup; "
         "the model cannot override paths or task binding.\n"
     )

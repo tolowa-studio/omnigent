@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI
 
 from dev.factory.gate_a_real.spec import RealTaskSpecError
+from omnigent.factory.gate_a.motion_order_status import read_motion_order_status_summary
 from omnigent.factory.gate_a.real_chat import (
     factory_gate_a_real_enabled,
     latest_user_message_text,
@@ -64,6 +65,16 @@ class FactoryGateARealExecutor(Executor):
         command = parse_operator_command(user_text)
         if command is None:
             yield TextChunk(text=usage_hint())
+            yield TurnComplete(response=None)
+            return
+
+        if command.kind == "order_status":
+            try:
+                summary = read_motion_order_status_summary(command.task_id)
+            except ValueError as exc:
+                yield ExecutorError(message=str(exc))
+                return
+            yield TextChunk(text=summary)
             yield TurnComplete(response=None)
             return
 
