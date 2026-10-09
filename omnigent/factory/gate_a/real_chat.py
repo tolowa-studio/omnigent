@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from dev.factory.gate_a_real.deliverables import collect_deliverables
 from dev.factory.gate_a_real.orchestration import (
     RealTaskRunOptions,
     RealTaskRunResult,
@@ -293,7 +294,12 @@ def resolve_task_paths(
     return spec_path, artifacts_dir
 
 
-def format_safe_summary(receipt: RealTaskReceipt, *, receipt_path: Path) -> str:
+def format_safe_summary(
+    receipt: RealTaskReceipt,
+    *,
+    receipt_path: Path,
+    note: str = ("note: snapshot from receipt.json only (not a live artifact verification)"),
+) -> str:
     lines = [
         f"receipt_ok: {receipt.ok}",
         f"task_id: {receipt.task_id}",
@@ -307,7 +313,7 @@ def format_safe_summary(receipt: RealTaskReceipt, *, receipt_path: Path) -> str:
         f"review_exit_code: {receipt.review_exit_code}",
         f"verify_exit_code: {receipt.verify_exit_code}",
         f"review_pass: {receipt.review_pass}",
-        "note: snapshot from receipt.json only (not a live artifact verification)",
+        note,
     ]
     return "\n".join(lines) + "\n"
 
@@ -403,6 +409,30 @@ def _reject_receipt_ok_success_evidence_mismatch(receipt: RealTaskReceipt) -> No
         )
 
 
+def _verify_workspace_deliverables_match_receipt(
+    spec_workspace: Path,
+    deliverable_paths: tuple[str, ...],
+    receipt: RealTaskReceipt,
+) -> None:
+    """Rehash bound workspace deliverables; ok=true status requires a live match."""
+    try:
+        inventory = collect_deliverables(spec_workspace, deliverable_paths)
+    except FileNotFoundError as exc:
+        raise ValueError(f"status deliverable check failed: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"status deliverable check failed: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(
+            f"status deliverable check failed: deliverable unreadable: {exc}"
+        ) from exc
+    expected = receipt.deliverable_manifest_sha256
+    if inventory.manifest_sha256 != expected:
+        raise ValueError(
+            "status deliverable check failed: current workspace manifest_sha256 "
+            "does not match receipt deliverable_manifest_sha256"
+        )
+
+
 def _load_receipt_file(path: Path) -> RealTaskReceipt:
     if not path.is_file():
         raise ValueError(f"receipt not found: {path}")
@@ -455,7 +485,20 @@ def read_status_summary(
     if receipt.workspace != str(spec.workspace):
         raise ValueError("receipt workspace does not match bound spec")
     _reject_receipt_ok_success_evidence_mismatch(receipt)
-    return format_safe_summary(receipt, receipt_path=receipt_path)
+    if receipt.ok:
+        _verify_workspace_deliverables_match_receipt(
+            Path(spec.workspace),
+            spec.deliverable_paths,
+            receipt,
+        )
+        note = (
+            "note: status verifies spec/receipt binding and rehashes workspace "
+            "deliverables against deliverable_manifest_sha256; session IDs, exit "
+            "codes, and freeze path remain historical receipt claims"
+        )
+    else:
+        note = "note: snapshot from receipt.json (failed run; no live deliverable verification)"
+    return format_safe_summary(receipt, receipt_path=receipt_path, note=note)
 
 
 def usage_hint() -> str:
