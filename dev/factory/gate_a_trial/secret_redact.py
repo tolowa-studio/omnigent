@@ -55,8 +55,7 @@ def redact_secrets(text: str, *, env: Mapping[str, str] | None = None) -> str:
         out,
         flags=re.IGNORECASE,
     )
-    out = _BEARER_CAPABILITY_RE.sub("Bearer <redacted:gate-a-capability>", out)
-    return out
+    return _BEARER_CAPABILITY_RE.sub("Bearer <redacted:gate-a-capability>", out)
 
 
 def redact_jsonable(value: object, *, env: Mapping[str, str] | None = None) -> object:

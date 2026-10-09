@@ -57,10 +57,8 @@ class GateACursorCliSandbox:
         return ["sandbox-exec", "-f", str(self.profile_path), *argv]
 
     def cleanup(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self.profile_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def prepare_gate_a_cursor_cli_sandbox(home_dir: Path) -> GateACursorCliSandbox:
