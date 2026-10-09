@@ -48,7 +48,9 @@ Chat commands for Gate A tasks are unchanged (`run approved task <task_id>`,
 Motion Core bridge command is available when motion pin env vars are set (see
 below): `order status <order_id>`. Opt-in draft submit is available when
 `OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1` and task contracts are pinned (see
-below): `order submit <task_id>`. Start, cancel, merge, and deployment are
+below): `order submit <task_id>`. Opt-in order start is available when
+`OMNIGENT_FACTORY_MOTION_ORDER_START=1` and local approval files are pinned
+(see below): `order start <order_id>`. Cancel, merge, and deployment are
 **not** implemented in this harness.
 
 Task IDs are validated strictly (no paths, separators, or whitespace). Symlinks,
@@ -114,12 +116,60 @@ Chat command (exact):
 order submit <task_id>
 ```
 
+#### Motion Core order start (phase-2 bridge, opt-in)
+
+Default **off**. When enabled, launches a **new** structured order via Motion
+Core `start --execute-direct-path` only after a local operator approval file
+matches a fresh Core `status` precheck. This is a local operator beta — not
+production activation and not proof of enterprise authorization.
+
+```bash
+export OMNIGENT_FACTORY_MOTION_ORDER_START=1
+export OMNIGENT_FACTORY_MOTION_ORDER_APPROVALS_DIR=/absolute/path/to/order-start-approvals
+export OMNIGENT_FACTORY_MOTION_CORE_ROOT=/absolute/path/to/motion-core
+export OMNIGENT_FACTORY_MOTION_ORDERS_ROOT=/absolute/path/to/orders
+```
+
+Layout: `OMNIGENT_FACTORY_MOTION_ORDER_APPROVALS_DIR/<order_id>.json` — one
+bounded JSON object per order (max 64 KiB; symlinks and traversal rejected).
+Exact fields only: `schema_id` =
+`omnigent.factory.motion-order-start-approval.v1`, `approved` = true, `order_id`
+(must match chat token), `brief_hash` (64 lowercase hex), `base_sha` (40- or
+64-char lowercase hex commit), `approved_by` and `approval_ref` (non-empty
+single-line strings). Unknown fields are rejected before Core runs.
+
+The harness runs Core `status <order_id> --orders-root <root> --json`, requires
+`ok:true`, `order.state` = `new`, structured submit schema
+`motion.order.structured-submit.v2`, matching `brief_hash` and `base_sha`, and no
+active cancellation (`cancel_request`, cancel phases other than Core's idle
+`active`/`none`, or markers). It compares those bindings to the approval
+file, then runs `start <order_id> --execute-direct-path --orders-root <root>
+--json` with `MOTION_ORDER_AUTO_MERGE=0`, `MOTION_ORDER_DUPLICATE_CHECK=enforce`,
+`MOTION_ORDER_DETACH=launchd`, and `MOTION_ORDER_CLIENT_SECRET_SCOPING=1`.
+The child uses the pinned `CLOUDSDK_CONFIG`; credential-file override variables
+are not forwarded. On timeout or nonzero exit it does not claim
+success — use `order status` to inspect outcome. On success it reports launch
+submitted only when Core returns `state: started`, `direct_path.mocked: false`,
+`direct_path.detached.ok: true`, and `direct_path.detached.mechanism: launchd`.
+
+**Creating an approval file (human operator):** after draft submit, copy
+`brief_hash` and `base_sha` from Core's JSON status into a new file
+named exactly `<order_id>.json` under the pinned approvals directory. Set
+`approved_by` / `approval_ref` to your local operator identity and ticket ref.
+Do not commit approval files to the repo unless they are fixture data.
+
+Chat command (exact):
+
+```text
+order start <order_id>
+```
+
 When using `omnigent.cli host`, include the motion pins in passthrough together
 with the Gate A binding vars. Append `,CLOUDSDK_CONFIG` only if Cursor auth on
 the host uses that config path (omit otherwise). For example:
 
 ```bash
-export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT,OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT,OMNIGENT_FACTORY_MOTION_ORDER_START,OMNIGENT_FACTORY_MOTION_ORDER_APPROVALS_DIR,OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
 ```
 
 Single-spec passthrough example:
@@ -146,6 +196,9 @@ paths or task IDs):
 - `order submit <task_id>` — Motion Core draft `new` when
   `OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1`, task contracts dir, and motion pins
   are set (does not use Gate A spec/artifacts binding)
+- `order start <order_id>` — Motion Core `start --execute-direct-path` when
+  `OMNIGENT_FACTORY_MOTION_ORDER_START=1`, approvals dir, and motion pins are
+  set (does not use Gate A spec/artifacts binding)
 
 `status` fails closed on malformed receipts or when `task_id`, `spec_sha256`, or
 `workspace` in `receipt.json` do not match the bound spec. The chat summary shows
