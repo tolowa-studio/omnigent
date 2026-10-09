@@ -666,7 +666,9 @@ async def test_executor_task_status_unchanged(
     spec_path.write_text(json.dumps(spec_dict, indent=2) + "\n", encoding="utf-8")
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
-    _receipt_for_spec(spec_path).write(artifacts / "receipt.json")
+    receipt = _receipt_for_spec(spec_path)
+    receipt.post_review_manifest_sha256 = receipt.deliverable_manifest_sha256
+    receipt.write(artifacts / "receipt.json")
     monkeypatch.setenv(REAL_TASK_SPEC_ENV, str(spec_path))
     monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts))
     _bind_real_chat_minimal(monkeypatch)
