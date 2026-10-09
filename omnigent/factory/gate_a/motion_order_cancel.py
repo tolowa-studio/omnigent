@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 from collections.abc import Callable
+from typing import Any
 
 from omnigent.factory.gate_a.motion_order_status import (
     _MAX_STDIO_CHARS,
@@ -23,6 +24,7 @@ from omnigent.factory.gate_a.motion_order_status import (
 MOTION_ORDER_CANCEL_ENABLE_ENV = "OMNIGENT_FACTORY_MOTION_ORDER_CANCEL"
 
 _CANCEL_OUTCOMES = frozenset({"cancelled", "cancel_requested", "already_completed"})
+_CANCEL_SUBPROCESS_TIMEOUT_S = _SUBPROCESS_TIMEOUT_S
 
 MotionOrderCancelSubprocessRunner = Callable[
     [list[str], dict[str, str]],
@@ -37,6 +39,20 @@ def motion_order_cancel_enabled(environ: dict[str, str] | None = None) -> bool:
     ).strip() == "1" and motion_order_pins_configured(env)
 
 
+def _cancel_outcome_uncertain_message() -> str:
+    return (
+        "Motion Core order cancel did not complete successfully; "
+        "outcome may need inspection via order status"
+    )
+
+
+def _cancel_ambiguous_outcome_message() -> str:
+    return (
+        "Motion Core order cancel returned an ambiguous outcome; "
+        "inspect with order status before retrying"
+    )
+
+
 def _default_subprocess_runner(
     argv: list[str],
     env: dict[str, str],
@@ -45,48 +61,62 @@ def _default_subprocess_runner(
         argv,
         capture_output=True,
         text=True,
-        timeout=_SUBPROCESS_TIMEOUT_S,
+        timeout=_CANCEL_SUBPROCESS_TIMEOUT_S,
         env=env,
         check=False,
     )
 
 
+def _parse_worker_signal_ok(payload: dict[str, Any]) -> bool | None:
+    if "worker_signal" not in payload:
+        return None
+    worker_signal = payload.get("worker_signal")
+    if worker_signal is None:
+        return None
+    if not isinstance(worker_signal, dict):
+        raise ValueError("worker_signal invalid")
+    ok = worker_signal.get("ok")
+    if ok is True:
+        return True
+    if ok is False:
+        return False
+    return None
+
+
 def _parse_cancel_json(stdout: str, *, requested_order_id: str) -> tuple[str, bool | None]:
     stripped = stdout.strip()
     if not stripped:
-        raise ValueError("Motion Core order cancel returned empty output")
+        raise ValueError("empty output")
     if len(stripped) > _MAX_STDIO_CHARS:
-        raise ValueError("Motion Core order cancel output exceeds size limit")
+        raise ValueError("output exceeds size limit")
     try:
         payload = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Motion Core order cancel is not valid JSON: {exc}") from exc
+    except json.JSONDecodeError:
+        raise ValueError("invalid json") from None
     if not isinstance(payload, dict):
-        raise ValueError("Motion Core order cancel root must be a JSON object")
+        raise ValueError("root must be object")
     if not _require_bool(payload, "ok"):
-        raise ValueError("Motion Core order cancel ok must be true")
+        raise ValueError("ok must be true")
     order_id = _require_str_field(payload, "order_id")
     if order_id != requested_order_id:
-        raise ValueError("Motion Core order cancel order_id does not match requested order_id")
+        raise ValueError("order_id mismatch")
     outcome = _require_str_field(payload, "outcome")
     if outcome not in _CANCEL_OUTCOMES:
-        raise ValueError("Motion Core order cancel outcome is unsupported")
-    worker_stopped: bool | None = None
-    if "worker_stopped" in payload:
-        worker_stopped = _require_bool(payload, "worker_stopped")
-    return outcome, worker_stopped
+        raise ValueError("outcome unsupported")
+    worker_signal_ok = _parse_worker_signal_ok(payload)
+    return outcome, worker_signal_ok
 
 
 def format_motion_order_cancel_safe_summary(
-    *, order_id: str, outcome: str, worker_stopped: bool | None
+    *, order_id: str, outcome: str, worker_signal_ok: bool | None
 ) -> str:
     lines = [
         "order_cancel_ok: true",
         f"outcome: {outcome}",
         f"order_id: {order_id}",
     ]
-    if worker_stopped is not None:
-        lines.append(f"worker_stopped: {'true' if worker_stopped else 'false'}")
+    if worker_signal_ok is True:
+        lines.append("worker_signal_ok: true")
     else:
         lines.append("note: cancellation result does not establish worker termination")
     return "\n".join(lines) + "\n"
@@ -122,18 +152,21 @@ def cancel_motion_order(
     try:
         completed = runner(argv, _minimal_node_env(env))
     except subprocess.TimeoutExpired:
-        raise ValueError("Motion Core order cancel timed out") from None
-    except OSError as exc:
-        raise ValueError(f"Motion Core order cancel failed to start: {exc}") from exc
+        raise ValueError(_cancel_outcome_uncertain_message()) from None
+    except OSError:
+        raise ValueError(_cancel_outcome_uncertain_message()) from None
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     if len(stdout) > _MAX_STDIO_CHARS or len(stderr) > _MAX_STDIO_CHARS:
-        raise ValueError("Motion Core order cancel output exceeds size limit")
+        raise ValueError(_cancel_ambiguous_outcome_message())
     if completed.returncode != 0:
-        raise ValueError(f"Motion Core order cancel exited with code {completed.returncode}")
-    outcome, worker_stopped = _parse_cancel_json(stdout, requested_order_id=order_id)
+        raise ValueError(_cancel_outcome_uncertain_message())
+    try:
+        outcome, worker_signal_ok = _parse_cancel_json(stdout, requested_order_id=order_id)
+    except ValueError:
+        raise ValueError(_cancel_ambiguous_outcome_message()) from None
     return format_motion_order_cancel_safe_summary(
         order_id=order_id,
         outcome=outcome,
-        worker_stopped=worker_stopped,
+        worker_signal_ok=worker_signal_ok,
     )

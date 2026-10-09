@@ -27,6 +27,8 @@ from omnigent.inner.executor import ExecutorError, TextChunk
 from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 
 _ORDER_ID = "ord-fixture-123"
+_UNCERTAIN = "outcome may need inspection via order status"
+_AMBIGUOUS = "inspect with order status before retrying"
 
 
 def _cancel_env(tmp_path: Path) -> dict[str, str]:
@@ -46,8 +48,10 @@ def _cancel_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _completed(payload: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
+def _completed(
+    payload: object, *, returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], returncode, json.dumps(payload), stderr)
 
 
 def test_parse_operator_command_order_cancel_exact() -> None:
@@ -90,14 +94,14 @@ def test_cancel_reports_only_core_outcome_and_uses_bounded_pinned_cli(
         env[MOTION_ORDERS_ROOT_ENV],
         "--json",
     ]
-    assert "worker_stopped:" not in summary
+    assert "worker_signal_ok:" not in summary
     assert "does not establish worker termination" in summary
     assert f"outcome: {outcome}" in summary
     assert "HOME" not in observed["env"]
     assert "OPENAI_API_KEY" not in observed["env"]
 
 
-def test_cancel_reports_worker_stopped_only_when_core_explicitly_says_true(
+def test_cancel_reports_worker_signal_ok_only_when_core_explicitly_proves_stop(
     tmp_path: Path,
 ) -> None:
     env = _cancel_env(tmp_path)
@@ -109,34 +113,45 @@ def test_cancel_reports_worker_stopped_only_when_core_explicitly_says_true(
             {
                 "ok": True,
                 "order_id": _ORDER_ID,
-                "outcome": "cancelled",
-                "worker_stopped": True,
+                "outcome": "cancel_requested",
+                "worker_signal": {"ok": True, "action": "launchctl_bootout"},
             }
         )
 
-    assert "worker_stopped: true" in cancel_motion_order(
+    assert "worker_signal_ok: true" in cancel_motion_order(
         _ORDER_ID, env, subprocess_runner=injected_runner
     )
+
+
+def test_cancel_does_not_infer_worker_stop_from_cancel_requested_outcome(
+    tmp_path: Path,
+) -> None:
+    env = _cancel_env(tmp_path)
+
+    def injected_runner(
+        _argv: list[str], _child_env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        return _completed(
+            {
+                "ok": True,
+                "order_id": _ORDER_ID,
+                "outcome": "cancel_requested",
+                "worker_signal": {"ok": False, "reason": "no_detached_worker"},
+            }
+        )
+
+    summary = cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+    assert "worker_signal_ok:" not in summary
+    assert "does not establish worker termination" in summary
 
 
 @pytest.mark.parametrize(
     ("order_id", "payload", "message"),
     [
         ("../escape", {"ok": True, "order_id": "../escape", "outcome": "cancelled"}, "order_id"),
-        (_ORDER_ID, {"ok": True, "order_id": "another", "outcome": "cancelled"}, "does not match"),
-        (
-            _ORDER_ID,
-            {"ok": True, "order_id": _ORDER_ID, "outcome": "worker_stopped"},
-            "unsupported",
-        ),
-        (
-            _ORDER_ID,
-            {"ok": True, "order_id": _ORDER_ID, "outcome": "cancelled", "worker_stopped": "yes"},
-            "boolean",
-        ),
     ],
 )
-def test_cancel_fails_closed_on_invalid_id_or_core_result(
+def test_cancel_fails_closed_on_invalid_id_before_subprocess(
     tmp_path: Path, order_id: str, payload: object, message: str
 ) -> None:
     env = _cancel_env(tmp_path)
@@ -151,8 +166,73 @@ def test_cancel_fails_closed_on_invalid_id_or_core_result(
 
     with pytest.raises(ValueError, match=message):
         cancel_motion_order(order_id, env, subprocess_runner=injected_runner)
-    if order_id == "../escape":
-        assert calls == 0
+    assert calls == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ok": True, "order_id": "another", "outcome": "cancelled"},
+        {"ok": True, "order_id": _ORDER_ID, "outcome": "worker_stopped"},
+        {"ok": True, "order_id": _ORDER_ID, "outcome": "cancelled", "worker_signal": "bad"},
+    ],
+)
+def test_cancel_ambiguous_core_json_directs_to_order_status(
+    tmp_path: Path, payload: object
+) -> None:
+    env = _cancel_env(tmp_path)
+
+    def injected_runner(
+        _argv: list[str], _child_env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        return _completed(payload)
+
+    with pytest.raises(ValueError, match=_AMBIGUOUS):
+        cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_fragment"),
+    [
+        (
+            lambda: _completed(
+                {"ok": True, "order_id": _ORDER_ID, "outcome": "cancelled"}, returncode=3
+            ),
+            _UNCERTAIN,
+        ),
+        (
+            lambda: subprocess.CompletedProcess(
+                [],
+                3,
+                "",
+                "secret-path /Users/op stderr",
+            ),
+            _UNCERTAIN,
+        ),
+        (
+            lambda: subprocess.CompletedProcess([], 0, "not-json-at-all", ""),
+            _AMBIGUOUS,
+        ),
+    ],
+)
+def test_cancel_uncertain_or_ambiguous_never_leaks_stderr_or_exit_code(
+    tmp_path: Path,
+    factory: object,
+    expected_fragment: str,
+) -> None:
+    env = _cancel_env(tmp_path)
+
+    def injected_runner(
+        _argv: list[str], _child_env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        assert callable(factory)
+        return factory()
+
+    with pytest.raises(ValueError, match=expected_fragment) as exc_info:
+        cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+    message = str(exc_info.value)
+    assert "code 3" not in message
+    assert "secret-path" not in message
 
 
 def test_cancel_timeout_is_bounded_and_sanitized(tmp_path: Path) -> None:
@@ -163,8 +243,21 @@ def test_cancel_timeout_is_bounded_and_sanitized(tmp_path: Path) -> None:
     ) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired("motion-order", 15)
 
-    with pytest.raises(ValueError, match="order cancel timed out"):
+    with pytest.raises(ValueError, match=_UNCERTAIN):
         cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+
+
+def test_cancel_spawn_failure_is_uncertain(tmp_path: Path) -> None:
+    env = _cancel_env(tmp_path)
+
+    def injected_runner(
+        _argv: list[str], _child_env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        raise OSError("ENOENT no such file")
+
+    with pytest.raises(ValueError, match=_UNCERTAIN) as exc_info:
+        cancel_motion_order(_ORDER_ID, env, subprocess_runner=injected_runner)
+    assert "ENOENT" not in str(exc_info.value)
 
 
 @pytest.mark.asyncio

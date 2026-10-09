@@ -188,11 +188,14 @@ order cancel <order_id>
 ```
 
 The harness calls the pinned Core CLI `cancel <order_id> --orders-root
-<orders_root> --json` with a short timeout and minimal environment. It reports
-only Core outcomes `cancelled`, `cancel_requested`, or `already_completed`.
-`cancel_requested` does not mean the worker stopped; worker termination is
-reported only if Core explicitly returns `worker_stopped`. Production
-authorization for cancellation remains pending.
+<orders_root> --json` with a short timeout (15s) and minimal environment. It
+reports only Core outcomes `cancelled`, `cancel_requested`, or
+`already_completed`. `cancel_requested` does not mean the worker stopped; worker
+termination is reported only when Core JSON includes `worker_signal.ok: true`.
+If the CLI times out, exits nonzero, fails to start, or returns unusable JSON,
+the bridge does not assert cancel outcome (Core may still have written a cancel
+marker); use `order status <order_id>` to inspect. Production authorization for
+cancellation remains pending.
 
 When using `omnigent.cli host`, include the motion pins in passthrough together
 with the Gate A binding vars. Append `,CLOUDSDK_CONFIG` only if Cursor auth on
