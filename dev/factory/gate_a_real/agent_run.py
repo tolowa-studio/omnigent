@@ -156,12 +156,33 @@ def _review_fields_match_schema(value: object, fields: dict[str, type]) -> bool:
     )
 
 
-def _review_grep_workspace_results_ok(value: object) -> bool:
+def _review_grep_workspace_results_ok(value: object, *, output_mode: str) -> bool:
     if not isinstance(value, dict):
         return False
     for path, workspace in value.items():
         if not isinstance(path, str) or not isinstance(workspace, dict):
             return False
+        if output_mode == "count":
+            if not _review_fields_match_schema(workspace, {"count": dict}):
+                return False
+            count = workspace.get("count", {})
+            if not _review_fields_match_schema(
+                count,
+                {
+                    "counts": list,
+                    "totalFiles": int,
+                    "totalMatches": int,
+                    "clientTruncated": bool,
+                    "ripgrepTruncated": bool,
+                },
+            ):
+                return False
+            if any(
+                not _review_fields_match_schema(item, {"file": str, "count": int})
+                for item in count.get("counts", [])
+            ):
+                return False
+            continue
         if not _review_fields_match_schema(workspace, {"content": dict}):
             return False
         content = workspace.get("content", {})
@@ -201,6 +222,7 @@ def _review_native_tool_payload_ok(variant: str, args: object, result: object | 
             "pattern": str,
             "path": str,
             "glob": str,
+            "outputMode": str,
             "caseInsensitive": bool,
             "multiline": bool,
             "toolCallId": str,
@@ -217,7 +239,7 @@ def _review_native_tool_payload_ok(variant: str, args: object, result: object | 
     if not isinstance(result, dict) or len(result) != 1:
         return False
     if "error" in result:
-        return _review_fields_match_schema(result["error"], {"errorMessage": str})
+        return _review_fields_match_schema(result["error"], {"errorMessage": str, "error": str})
     if "success" not in result:
         return False
     success = result["success"]
@@ -264,7 +286,14 @@ def _review_native_tool_payload_ok(variant: str, args: object, result: object | 
         )
     if variant == "globToolCall":
         return all(isinstance(item, str) for item in success.get("files", []))
-    return _review_grep_workspace_results_ok(success.get("workspaceResults", {}))
+    output_mode = args.get("outputMode", "content")
+    return (
+        output_mode in {"content", "count"}
+        and success.get("outputMode", output_mode) == output_mode
+        and _review_grep_workspace_results_ok(
+            success.get("workspaceResults", {}), output_mode=output_mode
+        )
+    )
 
 
 def review_stdout_forbidden_tool_violations(stdout: str) -> list[str]:

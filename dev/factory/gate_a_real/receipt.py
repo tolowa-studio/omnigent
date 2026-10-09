@@ -32,9 +32,10 @@ class RealTaskReceipt:
     builder_log_path: str | None = None
     review_log_path: str | None = None
     verify_log_path: str | None = None
+    omnigent_session_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema": "omnigent.factory.gate_a_real.receipt/v1",
             "ok": self.ok,
             "task_id": self.task_id,
@@ -55,6 +56,9 @@ class RealTaskReceipt:
             "review_log_path": self.review_log_path,
             "verify_log_path": self.verify_log_path,
         }
+        if self.omnigent_session_id is not None:
+            payload["omnigent_session_id"] = self.omnigent_session_id
+        return payload
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

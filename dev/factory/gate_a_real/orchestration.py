@@ -68,6 +68,26 @@ class RealTaskGateError(RuntimeError):
 class RealTaskRunOptions:
     artifacts_dir: Path
     review_only: bool = False
+    omnigent_session_id: str | None = None
+
+
+def _stamp_omnigent_session(
+    receipt: RealTaskReceipt,
+    omnigent_session_id: str | None,
+) -> RealTaskReceipt:
+    if omnigent_session_id:
+        receipt.omnigent_session_id = omnigent_session_id
+    return receipt
+
+
+def _write_gate_receipt(
+    receipt: RealTaskReceipt,
+    path: Path,
+    *,
+    omnigent_session_id: str | None,
+) -> None:
+    _stamp_omnigent_session(receipt, omnigent_session_id)
+    receipt.write(path)
 
 
 @dataclass
@@ -184,6 +204,9 @@ def _merge_drift_into_receipt_file(artifacts: Path, spec: RealTaskSpec, drift: l
                 fail.builder_log_path = prev.get("builder_log_path")
                 fail.review_log_path = prev.get("review_log_path")
                 fail.verify_log_path = prev.get("verify_log_path")
+                prev_omnigent = prev.get("omnigent_session_id")
+                if isinstance(prev_omnigent, str):
+                    fail.omnigent_session_id = prev_omnigent
         except (OSError, json.JSONDecodeError, TypeError):
             pass
     fail.write(receipt_path)
@@ -377,13 +400,19 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
     try:
         validate_not_expired(spec)
     except RealTaskSpecError as exc:
-        receipt = _fail_receipt(spec, [str(exc)])
+        receipt = _stamp_omnigent_session(
+            _fail_receipt(spec, [str(exc)]),
+            options.omnigent_session_id,
+        )
         return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
 
     artifacts = options.artifacts_dir.resolve()
     layout_problems = _artifacts_outside_workspace(artifacts, spec.workspace)
     if layout_problems:
-        receipt = _fail_receipt(spec, layout_problems)
+        receipt = _stamp_omnigent_session(
+            _fail_receipt(spec, layout_problems),
+            options.omnigent_session_id,
+        )
         return RealTaskRunResult(receipt=receipt, problems=layout_problems)
 
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -395,7 +424,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
     ):
         msg = "builder attempt already recorded; use --review-only or a fresh artifacts dir"
         receipt = _fail_receipt(spec, [msg])
-        receipt.write(artifacts / "receipt.json")
+        _write_gate_receipt(
+            receipt,
+            artifacts / "receipt.json",
+            omnigent_session_id=options.omnigent_session_id,
+        )
         return RealTaskRunResult(receipt=receipt, problems=[msg])
 
     cursor_executable = resolve_cursor_executable()
@@ -412,7 +445,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         config_problems = _validate_builder_config_hashes(spec, profile["effective_config_hashes"])
         if config_problems:
             receipt = _fail_receipt(spec, config_problems)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=config_problems)
 
         home_parent = artifacts / "isolated-home-parent"
@@ -420,14 +457,22 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         home_problems = pre_enable_home_must_be_pristine(home)
         if home_problems:
             receipt = _fail_receipt(spec, home_problems)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=home_problems)
 
         try:
             sandbox = prepare_gate_a_cursor_cli_sandbox(home)
         except GateACursorCliSandboxError as exc:
             receipt = _fail_receipt(spec, [str(exc)])
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
 
         try:
@@ -437,13 +482,21 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             )
         except ValueError as exc:
             receipt = _fail_receipt(spec, [str(exc)])
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
         try:
             workspace_mcp_before = _workspace_mcp_fingerprint(spec.workspace)
         except (RealTaskGateError, OSError) as exc:
             receipt = _fail_receipt(spec, [str(exc)])
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=[str(exc)])
 
         mcp_gate = discover_and_assert_zero_mcp_servers(
@@ -460,7 +513,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             if not mcp_problems:
                 mcp_problems = ["mcp preflight failed closed"]
             receipt = _fail_receipt(spec, mcp_problems)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=mcp_problems)
 
         builder_session_ids: list[str] = []
@@ -472,12 +529,20 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             if prior_state is None:
                 msg = "review-only requires resume_state.json"
                 receipt = _fail_receipt(spec, [msg])
-                receipt.write(artifacts / "receipt.json")
+                _write_gate_receipt(
+                    receipt,
+                    artifacts / "receipt.json",
+                    omnigent_session_id=options.omnigent_session_id,
+                )
                 return RealTaskRunResult(receipt=receipt, problems=[msg])
             drift = validate_review_only_resume(spec, artifacts, prior_state)
             if drift:
                 receipt = _fail_receipt(spec, drift)
-                receipt.write(artifacts / "receipt.json")
+                _write_gate_receipt(
+                    receipt,
+                    artifacts / "receipt.json",
+                    omnigent_session_id=options.omnigent_session_id,
+                )
                 return RealTaskRunResult(receipt=receipt, problems=drift)
             raw_ids = prior_state.get("builder_session_ids") or []
             if isinstance(raw_ids, list):
@@ -549,7 +614,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
                     review_pass=False,
                     completed_at=utc_now_iso(),
                 )
-                receipt.write(artifacts / "receipt.json")
+                _write_gate_receipt(
+                    receipt,
+                    artifacts / "receipt.json",
+                    omnigent_session_id=options.omnigent_session_id,
+                )
                 return RealTaskRunResult(receipt=receipt, problems=problems)
 
         try:
@@ -559,7 +628,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt = _fail_receipt(spec, problems)
             receipt.builder_session_ids = builder_session_ids
             receipt.builder_exit_code = builder_exit_code
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         if options.review_only and prior_state:
@@ -570,7 +643,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
                 receipt.builder_session_ids = builder_session_ids
                 receipt.builder_exit_code = builder_exit_code
                 receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
-                receipt.write(artifacts / "receipt.json")
+                _write_gate_receipt(
+                    receipt,
+                    artifacts / "receipt.json",
+                    omnigent_session_id=options.omnigent_session_id,
+                )
                 return RealTaskRunResult(receipt=receipt, problems=problems)
 
         verify_code, verify_log = _run_verify(spec)
@@ -607,7 +684,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
                 review_pass=False,
                 completed_at=utc_now_iso(),
             )
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             write_resume_state(
                 state_path,
                 {
@@ -631,7 +712,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.builder_session_ids = builder_session_ids
             receipt.builder_exit_code = builder_exit_code
             receipt.verify_exit_code = verify_code
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
         if options.review_only and not inventories_match(inventory, verified_inventory):
             problems.append("deliverables changed during review-only verification")
@@ -639,7 +724,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.builder_session_ids = builder_session_ids
             receipt.builder_exit_code = builder_exit_code
             receipt.verify_exit_code = verify_code
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
         inventory = verified_inventory
 
@@ -653,7 +742,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.builder_exit_code = builder_exit_code
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
         freeze_sha = _freeze_manifest_sha256(freeze_manifest)
         review_config_parent = Path(
@@ -671,7 +764,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
         _write_text(
             artifacts / "review.profile.json",
@@ -689,7 +786,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         try:
@@ -702,7 +803,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         try:
@@ -718,7 +823,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         try:
@@ -750,7 +859,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         builder_config_drift = _validate_builder_config_hashes(
@@ -764,7 +877,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         review_config_drift = _validate_review_config_hashes(
@@ -778,7 +895,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             receipt.verify_exit_code = verify_code
             receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
             receipt.freeze_manifest_path = str(freeze_manifest)
-            receipt.write(artifacts / "receipt.json")
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
             return RealTaskRunResult(receipt=receipt, problems=problems)
 
         review_argv = build_agent_argv(
@@ -855,7 +976,11 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             review_log_path=str(review_stdout_log),
             verify_log_path=str(artifacts / "verify.log"),
         )
-        receipt.write(artifacts / "receipt.json")
+        _write_gate_receipt(
+            receipt,
+            artifacts / "receipt.json",
+            omnigent_session_id=options.omnigent_session_id,
+        )
         write_resume_state(
             state_path,
             {

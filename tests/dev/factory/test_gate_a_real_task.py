@@ -452,6 +452,57 @@ def test_review_native_read_only_tool_pair_is_parsed(variant: str) -> None:
     )
 
 
+def test_review_native_glob_timeout_is_parsed_without_masking_execution() -> None:
+    stdout = _native_tool_pair("globToolCall", {"error": {"error": "Timed out after 25s"}})
+    assert review_stdout_forbidden_tool_violations(stdout) == []
+
+    unsafe = _native_tool_pair(
+        "globToolCall", {"error": {"error": "Timed out after 25s", "exitCode": 0}}
+    )
+    assert review_stdout_forbidden_tool_violations(unsafe)
+
+
+def test_review_native_grep_count_result_is_parsed_strictly() -> None:
+    call_id = "grep-count"
+    args = {"pattern": "test_", "path": "/workspace/tests", "outputMode": "count"}
+    result = {
+        "success": {
+            "pattern": "test_",
+            "path": "/workspace/tests",
+            "outputMode": "count",
+            "workspaceResults": {
+                "/workspace": {
+                    "count": {
+                        "counts": [{"file": "test_sample.py", "count": 2}],
+                        "totalFiles": 1,
+                        "totalMatches": 2,
+                        "clientTruncated": False,
+                        "ripgrepTruncated": False,
+                    }
+                }
+            },
+        }
+    }
+    start = {
+        "type": "tool_call",
+        "subtype": "started",
+        "call_id": call_id,
+        "tool_call": {"toolCallId": call_id, "grepToolCall": {"args": args}},
+    }
+    complete = {
+        "type": "tool_call",
+        "subtype": "completed",
+        "call_id": call_id,
+        "tool_call": {"toolCallId": call_id, "grepToolCall": {"args": args, "result": result}},
+    }
+    assert (
+        review_stdout_forbidden_tool_violations(json.dumps(start) + "\n" + json.dumps(complete))
+        == []
+    )
+    result["success"]["workspaceResults"]["/workspace"]["count"]["exitCode"] = 0
+    assert review_stdout_forbidden_tool_violations(json.dumps(start) + "\n" + json.dumps(complete))
+
+
 def test_review_native_grep_with_optional_glob_arg_is_parsed() -> None:
     call_id = "grep-with-glob"
     args = {

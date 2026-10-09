@@ -37,6 +37,15 @@ from omnigent.inner.executor import (
     TurnComplete,
 )
 from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
+from omnigent.runtime.telemetry import current_session_id
+
+
+def _omnigent_session_id_from_config(config: ExecutorConfig | None) -> str | None:
+    if config is not None:
+        raw = config.extra.get("omnigent_session_id")
+        if isinstance(raw, str) and raw:
+            return raw
+    return current_session_id()
 
 
 class FactoryGateARealExecutor(Executor):
@@ -55,7 +64,8 @@ class FactoryGateARealExecutor(Executor):
         system_prompt: str,
         config: ExecutorConfig | None = None,
     ) -> AsyncIterator[ExecutorEvent]:
-        del tools, system_prompt, config
+        del tools, system_prompt
+        omnigent_session_id = _omnigent_session_id_from_config(config)
         if not factory_gate_a_real_enabled():
             yield ExecutorError(
                 message=(
@@ -136,6 +146,7 @@ class FactoryGateARealExecutor(Executor):
             artifacts_dir,
             command.task_id,
             review_only=command.kind == "review",
+            omnigent_session_id=omnigent_session_id,
         ):
             yield event
             if isinstance(event, ExecutorError):

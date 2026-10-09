@@ -299,6 +299,7 @@ def format_safe_summary(receipt: RealTaskReceipt, *, receipt_path: Path) -> str:
         f"receipt: {receipt_path}",
         f"problem_count: {len(receipt.problems)}",
         f"freeze_manifest: {receipt.freeze_manifest_path or '(none)'}",
+        f"omnigent_session_id: {receipt.omnigent_session_id or '(none)'}",
         f"builder_session_ids: {', '.join(receipt.builder_session_ids) or '(none)'}",
         f"review_session_ids: {', '.join(receipt.review_session_ids) or '(none)'}",
         f"builder_exit_code: {receipt.builder_exit_code}",
@@ -352,6 +353,12 @@ def _require_str_or_none(data: dict[str, object], key: str) -> str | None:
     return value
 
 
+def _optional_str_field(data: dict[str, object], key: str) -> str | None:
+    if key not in data:
+        return None
+    return _require_str_or_none(data, key)
+
+
 def _load_receipt_file(path: Path) -> RealTaskReceipt:
     if not path.is_file():
         raise ValueError(f"receipt not found: {path}")
@@ -380,6 +387,7 @@ def _load_receipt_file(path: Path) -> RealTaskReceipt:
         freeze_manifest_path=_require_str_or_none(data, "freeze_manifest_path"),
         review_pass=_require_bool(data, "review_pass"),
         completed_at=_require_str(data, "completed_at"),
+        omnigent_session_id=_optional_str_field(data, "omnigent_session_id"),
     )
 
 
@@ -426,6 +434,7 @@ async def run_approved_task_with_heartbeat(
     task_id: str,
     *,
     review_only: bool = False,
+    omnigent_session_id: str | None = None,
 ) -> AsyncIterator[ExecutorEvent]:
     try:
         spec = load_real_task_spec(spec_path)
@@ -446,7 +455,11 @@ async def run_approved_task_with_heartbeat(
         yield TextChunk(text=f"Starting Gate A review-only run for {task_id}…\n")
     else:
         yield TextChunk(text=f"Starting Gate A real-task run for {task_id}…\n")
-    options = RealTaskRunOptions(artifacts_dir=artifacts_dir, review_only=review_only)
+    options = RealTaskRunOptions(
+        artifacts_dir=artifacts_dir,
+        review_only=review_only,
+        omnigent_session_id=omnigent_session_id,
+    )
     run_task = asyncio.create_task(asyncio.to_thread(run_real_task_gate, spec, options))
     heartbeat = 0
     while not run_task.done():

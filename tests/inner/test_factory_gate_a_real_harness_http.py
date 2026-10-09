@@ -13,7 +13,11 @@ import httpx
 import pytest
 
 from dev.factory.gate_a_real.constants import REAL_TASK_ENV
-from dev.factory.gate_a_real.orchestration import RealTaskRunResult
+from dev.factory.gate_a_real.orchestration import (
+    RealTaskRunOptions,
+    RealTaskRunResult,
+    _write_gate_receipt,
+)
 from dev.factory.gate_a_real.profile import (
     materialize_real_task_cursor_config_dir,
     materialize_real_task_review_config_dir,
@@ -29,6 +33,8 @@ from omnigent.factory.gate_a.real_chat import (
 TASK_ID = "beta-chat-smoke-20261008"
 _CONVERSATION_ID = "conv_factory_gate_a_real_http"
 _STATUS_PROMPT = f"status {TASK_ID}"
+_RUN_PROMPT = f"run approved task {TASK_ID}"
+_REVIEW_PROMPT = f"review approved task {TASK_ID}"
 _RAW_PROBLEM_SNIPPET = "builder attempt already recorded"
 
 
@@ -109,13 +115,17 @@ def _bind_real_chat_env(
     monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts_dir))
 
 
-def _status_message_body() -> dict[str, object]:
+def _message_body(text: str) -> dict[str, object]:
     return {
         "type": "message",
         "role": "user",
         "model": "factory-gate-a-real-beta",
-        "content": [{"type": "input_text", "text": _STATUS_PROMPT}],
+        "content": [{"type": "input_text", "text": text}],
     }
+
+
+def _status_message_body() -> dict[str, object]:
+    return _message_body(_STATUS_PROMPT)
 
 
 async def _stream_iter(response: httpx.Response) -> AsyncIterator[_ParsedSSEEvent]:
@@ -139,19 +149,28 @@ async def _stream_iter(response: httpx.Response) -> AsyncIterator[_ParsedSSEEven
             yield _ParsedSSEEvent(event=event_name, data=data_payload)
 
 
-async def _post_status_turn(app: object) -> list[_ParsedSSEEvent]:
+async def _post_turn(
+    app: object,
+    *,
+    conversation_id: str = _CONVERSATION_ID,
+    body: dict[str, object],
+) -> list[_ParsedSSEEvent]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://harness.test") as client:
         events: list[_ParsedSSEEvent] = []
         async with client.stream(
             "POST",
-            f"/v1/sessions/{_CONVERSATION_ID}/events",
-            json=_status_message_body(),
+            f"/v1/sessions/{conversation_id}/events",
+            json=body,
         ) as response:
             response.raise_for_status()
             async for event in _stream_iter(response):
                 events.append(event)
         return events
+
+
+async def _post_status_turn(app: object) -> list[_ParsedSSEEvent]:
+    return await _post_turn(app, body=_status_message_body())
 
 
 def _combined_text_deltas(events: list[_ParsedSSEEvent]) -> str:
@@ -209,7 +228,9 @@ async def test_http_status_with_bound_receipt_emits_safe_summary(
     spec_path = _write_spec(tmp_path, workspace)
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
-    _receipt_for_spec(spec_path, ok=False).write(artifacts / "receipt.json")
+    receipt = _receipt_for_spec(spec_path, ok=False)
+    receipt.omnigent_session_id = _CONVERSATION_ID
+    receipt.write(artifacts / "receipt.json")
     _bind_real_chat_env(monkeypatch, spec_path=spec_path, artifacts_dir=artifacts)
 
     run_calls = 0
@@ -231,8 +252,139 @@ async def test_http_status_with_bound_receipt_emits_safe_summary(
 
     assert run_calls == 0
     assert events[-1].event == "response.completed"
+    assert f"omnigent_session_id: {_CONVERSATION_ID}" in text
     assert "receipt_ok: False" in text
     assert "problem_count:" in text
     assert "verify_exit_code:" in text
     assert _RAW_PROBLEM_SNIPPET not in text
     assert "do the thing" not in text
+
+
+@pytest.mark.asyncio
+async def test_http_run_persists_omnigent_session_with_telemetry_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts"
+    _bind_real_chat_env(monkeypatch, spec_path=spec_path, artifacts_dir=artifacts)
+    monkeypatch.delenv("OMNIGENT_TELEMETRY_ENABLED", raising=False)
+    seen_options: list[RealTaskRunOptions] = []
+
+    def _fake_run(spec: object, options: RealTaskRunOptions) -> RealTaskRunResult:
+        del spec
+        seen_options.append(options)
+        art = options.artifacts_dir
+        art.mkdir(parents=True, exist_ok=True)
+        receipt = _receipt_for_spec(spec_path, ok=True)
+        receipt.builder_session_ids = ["cursor-builder-session"]
+        receipt.review_session_ids = ["cursor-review-session"]
+        _write_gate_receipt(
+            receipt,
+            art / "receipt.json",
+            omnigent_session_id=options.omnigent_session_id,
+        )
+        return RealTaskRunResult(receipt=receipt, problems=[])
+
+    monkeypatch.setattr("omnigent.factory.gate_a.real_chat.run_real_task_gate", _fake_run)
+
+    from omnigent.inner import factory_gate_a_real_harness
+
+    app = factory_gate_a_real_harness.create_app()
+    app.state.conversation_id = _CONVERSATION_ID
+    events = await _post_turn(app, body=_message_body(_RUN_PROMPT))
+    text = _combined_text_deltas(events)
+
+    assert len(seen_options) == 1
+    assert seen_options[0].omnigent_session_id == _CONVERSATION_ID
+    saved = json.loads((artifacts / "receipt.json").read_text(encoding="utf-8"))
+    assert saved["omnigent_session_id"] == _CONVERSATION_ID
+    assert saved["builder_session_ids"] == ["cursor-builder-session"]
+    assert f"omnigent_session_id: {_CONVERSATION_ID}" in text
+    assert "cursor-builder-session" in text
+    assert events[-1].event == "response.completed"
+
+
+@pytest.mark.asyncio
+async def test_http_failed_run_carries_same_omnigent_session_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OMNIGENT_TELEMETRY_ENABLED", raising=False)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts"
+    _bind_real_chat_env(monkeypatch, spec_path=spec_path, artifacts_dir=artifacts)
+
+    def _fake_run(spec: object, options: RealTaskRunOptions) -> RealTaskRunResult:
+        del spec
+        art = options.artifacts_dir
+        art.mkdir(parents=True, exist_ok=True)
+        receipt = _receipt_for_spec(spec_path, ok=False)
+        _write_gate_receipt(
+            receipt,
+            art / "receipt.json",
+            omnigent_session_id=options.omnigent_session_id,
+        )
+        return RealTaskRunResult(receipt=receipt, problems=list(receipt.problems))
+
+    monkeypatch.setattr("omnigent.factory.gate_a.real_chat.run_real_task_gate", _fake_run)
+
+    from omnigent.inner import factory_gate_a_real_harness
+
+    app = factory_gate_a_real_harness.create_app()
+    app.state.conversation_id = _CONVERSATION_ID
+    events = await _post_turn(app, body=_message_body(_RUN_PROMPT))
+    text = _combined_text_deltas(events)
+    saved = json.loads((artifacts / "receipt.json").read_text(encoding="utf-8"))
+
+    assert saved["omnigent_session_id"] == _CONVERSATION_ID
+    assert f"omnigent_session_id: {_CONVERSATION_ID}" in text
+    assert any(e.event == "response.failed" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_http_review_only_uses_review_chat_session_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_conv = "conv_factory_gate_a_review_only"
+    monkeypatch.delenv("OMNIGENT_TELEMETRY_ENABLED", raising=False)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts"
+    _bind_real_chat_env(monkeypatch, spec_path=spec_path, artifacts_dir=artifacts)
+
+    def _fake_run(spec: object, options: RealTaskRunOptions) -> RealTaskRunResult:
+        del spec
+        assert options.review_only is True
+        art = options.artifacts_dir
+        art.mkdir(parents=True, exist_ok=True)
+        receipt = _receipt_for_spec(spec_path, ok=True)
+        receipt.builder_session_ids = ["prior-builder"]
+        receipt.review_session_ids = ["cursor-review-only"]
+        _write_gate_receipt(
+            receipt,
+            art / "receipt.json",
+            omnigent_session_id=options.omnigent_session_id,
+        )
+        return RealTaskRunResult(receipt=receipt, problems=[])
+
+    monkeypatch.setattr("omnigent.factory.gate_a.real_chat.run_real_task_gate", _fake_run)
+
+    from omnigent.inner import factory_gate_a_real_harness
+
+    app = factory_gate_a_real_harness.create_app()
+    app.state.conversation_id = review_conv
+    text = _combined_text_deltas(
+        await _post_turn(app, conversation_id=review_conv, body=_message_body(_REVIEW_PROMPT))
+    )
+    saved = json.loads((artifacts / "receipt.json").read_text(encoding="utf-8"))
+    assert saved["omnigent_session_id"] == review_conv
+    assert saved["builder_session_ids"] == ["prior-builder"]
+    assert f"omnigent_session_id: {review_conv}" in text
+    assert "prior-builder" in text

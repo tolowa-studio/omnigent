@@ -35,9 +35,10 @@ from omnigent.factory.gate_a.real_chat import (
 )
 from omnigent.harness_plugins import valid_harnesses
 from omnigent.inner.datamodel import Message
-from omnigent.inner.executor import ExecutorError, TextChunk, TurnComplete
+from omnigent.inner.executor import ExecutorConfig, ExecutorError, TextChunk, TurnComplete
 from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 from omnigent.runtime.harnesses import _HARNESS_MODULES
+from omnigent.runtime.telemetry import current_session_id, session_scope
 from omnigent.spec._omnigent_compat import OMNIGENT_EXECUTOR_TYPE
 from omnigent.spec.types import ExecutorSpec, LLMConfig
 from omnigent.spec.validator import validate
@@ -128,12 +129,14 @@ async def _collect_events(
     text: str,
     *,
     content: object | None = None,
+    config: ExecutorConfig | None = None,
 ) -> list[object]:
     events: list[object] = []
     async for event in executor.run_turn(
         [Message(role="user", content=content if content is not None else text)],
         [],
         "",
+        config=config,
     ):
         events.append(event)
     return events
@@ -679,6 +682,73 @@ def test_format_safe_summary_omits_logs() -> None:
     assert "do the thing" not in text
 
 
+def test_format_safe_summary_shows_omnigent_session_id() -> None:
+    receipt = _sample_receipt()
+    receipt.omnigent_session_id = "conv_unit_bind"
+    text = format_safe_summary(receipt, receipt_path=Path("/tmp/receipt.json"))
+    assert "omnigent_session_id: conv_unit_bind" in text
+
+
+def test_session_scope_binds_without_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OMNIGENT_TELEMETRY_ENABLED", raising=False)
+    assert current_session_id() is None
+    with session_scope("conv_offline_bind"):
+        assert current_session_id() == "conv_offline_bind"
+    assert current_session_id() is None
+
+
+@pytest.mark.asyncio
+async def test_run_passes_omnigent_session_from_executor_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    monkeypatch.setenv(REAL_TASK_CHAT_ENV, "1")
+    monkeypatch.setenv(REAL_TASK_SPEC_ENV, str(spec_path))
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(artifacts))
+    seen_options: list[RealTaskRunOptions] = []
+
+    def _fake_run(spec: object, options: RealTaskRunOptions) -> RealTaskRunResult:
+        del spec
+        seen_options.append(options)
+        receipt = _sample_receipt(ok=True)
+        options.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        receipt.write(options.artifacts_dir / "receipt.json")
+        return RealTaskRunResult(receipt=receipt, problems=[])
+
+    monkeypatch.setattr("omnigent.factory.gate_a.real_chat.run_real_task_gate", _fake_run)
+    config = ExecutorConfig(extra={"omnigent_session_id": "conv_from_adapter"})
+    await _collect_events(
+        FactoryGateARealExecutor(),
+        "run approved task unit-task",
+        config=config,
+    )
+    assert len(seen_options) == 1
+    assert seen_options[0].omnigent_session_id == "conv_from_adapter"
+
+
+def test_direct_gate_run_omits_omnigent_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dev.factory.gate_a_real.orchestration import run_real_task_gate
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    spec_path = _write_spec(tmp_path, workspace)
+    artifacts = tmp_path / "artifacts-outside"
+    artifacts.mkdir()
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    spec = load_real_task_spec(spec_path)
+    (artifacts / "builder.stdout.txt").write_text("prior\n", encoding="utf-8")
+    result = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
+    assert result.receipt.omnigent_session_id is None
+    saved = json.loads((artifacts / "receipt.json").read_text(encoding="utf-8"))
+    assert "omnigent_session_id" not in saved
+
+
 def test_read_status_task_mismatch(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -709,6 +779,7 @@ def test_failed_receipt_status(tmp_path: Path) -> None:
     assert "receipt_ok: False" in summary
     assert "verify_exit_code:" in summary
     assert "already recorded" not in summary
+    assert "omnigent_session_id: (none)" in summary
 
 
 def test_read_status_rejects_stale_receipt_spec_hash(tmp_path: Path) -> None:
