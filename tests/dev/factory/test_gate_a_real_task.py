@@ -339,6 +339,78 @@ def test_review_rejects_unknown_structured_execution_envelopes(
     assert review_stdout_forbidden_tool_violations("\n".join(map(json.dumps, events)))
 
 
+def test_review_read_success_allows_content_blob_id_without_inline_content() -> None:
+    """Blob-backed Read completions omit inline content but must still pair."""
+    call_id = "read-blob-id"
+    args = {
+        "path": "omnigent/factory/gate_a/real_chat.py",
+    }
+    result = {
+        "success": {
+            "isEmpty": False,
+            "exceededLimit": False,
+            "totalLines": 331,
+            "fileSize": 12062,
+            "path": "omnigent/factory/gate_a/real_chat.py",
+            "readRange": {"startLine": 1, "endLine": 331},
+            "contentBlobId": "9fSViMLnf5xz6L0bzwlT5hup/EZuBbwj5gizKvJKDfs=",
+            "relatedCursorRulePaths": [],
+            "relatedCursorRules": [],
+        }
+    }
+    stdout = (
+        json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "call_id": call_id,
+                "tool_call": {"toolCallId": call_id, "readToolCall": {"args": args}},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "call_id": call_id,
+                "tool_call": {
+                    "toolCallId": call_id,
+                    "readToolCall": {"args": args, "result": result},
+                },
+            }
+        )
+    )
+    assert review_stdout_forbidden_tool_violations(stdout) == []
+
+    bad = dict(result)
+    bad["success"] = {**result["success"], "exitCode": 0}
+    stdout_bad = (
+        json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "call_id": call_id,
+                "tool_call": {"toolCallId": call_id, "readToolCall": {"args": args}},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "call_id": call_id,
+                "tool_call": {
+                    "toolCallId": call_id,
+                    "readToolCall": {"args": args, "result": bad},
+                },
+            }
+        )
+    )
+    assert any(
+        "unparsed or execution" in p for p in review_stdout_forbidden_tool_violations(stdout_bad)
+    )
+
+
 def test_review_read_string_content_is_inert() -> None:
     text = 'A source file can say {"name":"Task","input":{"command":"id"}}.'
     assert (
@@ -378,6 +450,191 @@ def test_review_native_read_only_tool_pair_is_parsed(variant: str) -> None:
     assert (
         review_stdout_forbidden_tool_violations(_native_tool_pair(variant, {"success": {}})) == []
     )
+
+
+def test_review_native_grep_with_optional_glob_arg_is_parsed() -> None:
+    call_id = "grep-with-glob"
+    args = {
+        "pattern": "RealTaskRunOptions",
+        "path": "/workspace/omnigent/factory/gate_a",
+        "glob": "*.py",
+        "caseInsensitive": False,
+        "multiline": False,
+        "toolCallId": call_id,
+        "offset": 0,
+    }
+    result = {
+        "success": {
+            "outputMode": "content",
+            "path": "/workspace/omnigent/factory/gate_a",
+            "pattern": "RealTaskRunOptions",
+            "workspaceResults": {
+                "/workspace": {
+                    "content": {
+                        "clientTruncated": False,
+                        "matches": [
+                            {
+                                "file": "omnigent/factory/gate_a/real_chat.py",
+                                "matches": [
+                                    {
+                                        "content": "class RealTaskRunOptions:",
+                                        "contentTruncated": False,
+                                        "isContextLine": False,
+                                        "lineNumber": 68,
+                                    }
+                                ],
+                            }
+                        ],
+                        "ripgrepTruncated": False,
+                        "totalLines": 1,
+                        "totalMatchedLines": 1,
+                    }
+                }
+            },
+        }
+    }
+    start = {
+        "type": "tool_call",
+        "subtype": "started",
+        "call_id": call_id,
+        "tool_call": {"toolCallId": call_id, "grepToolCall": {"args": args}},
+    }
+    complete = {
+        "type": "tool_call",
+        "subtype": "completed",
+        "call_id": call_id,
+        "tool_call": {
+            "toolCallId": call_id,
+            "grepToolCall": {"args": args, "result": result},
+        },
+    }
+    stdout = json.dumps(start) + "\n" + json.dumps(complete)
+    assert review_stdout_forbidden_tool_violations(stdout) == []
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        {"headLimit": 50},
+        {"contextAfter": 3},
+        {"glob": "*.py", "headLimit": 25},
+    ],
+)
+def test_review_native_grep_optional_read_args_parsed(
+    extra_args: dict[str, object],
+) -> None:
+    call_id = "grep-read-options"
+    args = {
+        "pattern": "foo",
+        "path": "/workspace",
+        "caseInsensitive": False,
+        "multiline": False,
+        "toolCallId": call_id,
+        "offset": 0,
+        **extra_args,
+    }
+    result = {
+        "success": {
+            "outputMode": "content",
+            "path": "/workspace",
+            "pattern": "foo",
+            "workspaceResults": {},
+        }
+    }
+    stdout = (
+        json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "started",
+                "call_id": call_id,
+                "tool_call": {"toolCallId": call_id, "grepToolCall": {"args": args}},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "call_id": call_id,
+                "tool_call": {
+                    "toolCallId": call_id,
+                    "grepToolCall": {"args": args, "result": result},
+                },
+            }
+        )
+    )
+    assert review_stdout_forbidden_tool_violations(stdout) == []
+
+
+def test_review_native_grep_rejects_unparsed_and_execution_fields() -> None:
+    call_id = "grep-bad-fields"
+    base_args = {
+        "pattern": "foo",
+        "path": "/workspace",
+        "caseInsensitive": False,
+        "multiline": False,
+        "toolCallId": call_id,
+        "offset": 0,
+    }
+    unparsed_args = {**base_args, "command": "rg foo"}
+    stdout_unparsed = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": call_id,
+            "tool_call": {
+                "toolCallId": call_id,
+                "grepToolCall": {
+                    "args": unparsed_args,
+                    "result": {"success": {"outputMode": "content", "workspaceResults": {}}},
+                },
+            },
+        }
+    )
+    problems = review_stdout_forbidden_tool_violations(stdout_unparsed)
+    assert any("unparsed or execution" in p for p in problems)
+
+    cwd_args = {**base_args, "cwd": "/workspace"}
+    stdout_cwd = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": call_id,
+            "tool_call": {
+                "toolCallId": call_id,
+                "grepToolCall": {
+                    "args": cwd_args,
+                    "result": {"success": {"outputMode": "content", "workspaceResults": {}}},
+                },
+            },
+        }
+    )
+    problems_cwd = review_stdout_forbidden_tool_violations(stdout_cwd)
+    assert any("unparsed or execution" in p for p in problems_cwd)
+
+    exec_args = dict(base_args)
+    stdout_exec = json.dumps(
+        {
+            "type": "tool_call",
+            "subtype": "completed",
+            "call_id": call_id,
+            "tool_call": {
+                "toolCallId": call_id,
+                "grepToolCall": {
+                    "args": exec_args,
+                    "result": {
+                        "success": {
+                            "outputMode": "content",
+                            "workspaceResults": {},
+                            "exitCode": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+    problems_exec = review_stdout_forbidden_tool_violations(stdout_exec)
+    assert any("unparsed or execution" in p for p in problems_exec)
 
 
 @pytest.mark.parametrize(

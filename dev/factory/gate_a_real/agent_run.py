@@ -173,6 +173,7 @@ def _review_grep_workspace_results_ok(value: object) -> bool:
                 "ripgrepTruncated": bool,
                 "totalLines": int,
                 "totalMatchedLines": int,
+                "headLimitApplied": int,
             },
         ):
             return False
@@ -199,10 +200,13 @@ def _review_native_tool_payload_ok(variant: str, args: object, result: object | 
         "grepToolCall": {
             "pattern": str,
             "path": str,
+            "glob": str,
             "caseInsensitive": bool,
             "multiline": bool,
             "toolCallId": str,
             "offset": int,
+            "headLimit": int,
+            "contextAfter": int,
         },
         "globToolCall": {"targetDirectory": str, "globPattern": str},
     }
@@ -220,6 +224,7 @@ def _review_native_tool_payload_ok(variant: str, args: object, result: object | 
     success_fields = {
         "readToolCall": {
             "content": str,
+            "contentBlobId": str,
             "exceededLimit": bool,
             "fileSize": int,
             "isEmpty": bool,
