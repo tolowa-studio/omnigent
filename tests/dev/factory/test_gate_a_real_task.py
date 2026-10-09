@@ -36,6 +36,21 @@ from dev.factory.gate_a_real.spec import (
     load_real_task_spec,
 )
 
+_FAKE_MOTION_CURSOR_WRAPPER = "/fake/motion-cursor-agent"
+_FAKE_TRUSTED_CURSOR_VENDOR = "/fake/cursor-vendor-agent"
+
+
+def _patch_real_task_cursor_pins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic wrapper + vendor pin for mocked orchestration runs."""
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
+        lambda: _FAKE_MOTION_CURSOR_WRAPPER,
+    )
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.profile.trusted_cursor_vendor_binary",
+        lambda: _FAKE_TRUSTED_CURSOR_VENDOR,
+    )
+
 
 def _write_spec(tmp_path: Path, workspace: Path, **overrides: object) -> Path:
     profile_dir = tmp_path / "profile"
@@ -1114,7 +1129,7 @@ def test_run_real_task_gate_missing_vendor_pin_stops_before_preflight(
     )
     monkeypatch.setattr(
         "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-        lambda: "/fake/motion-cursor-agent",
+        lambda: _FAKE_MOTION_CURSOR_WRAPPER,
     )
     monkeypatch.setattr(
         "dev.factory.gate_a_real.profile.trusted_cursor_vendor_binary", lambda: None
@@ -1225,10 +1240,7 @@ def test_run_real_task_gate_fails_when_builder_config_mutated_before_review(
         lambda *a, **k: {"gate_passed": True, "gate_failure_reasons": []},
     )
     monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
-    monkeypatch.setattr(
-        "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-        lambda: "/fake/motion-cursor-agent",
-    )
+    _patch_real_task_cursor_pins(monkeypatch)
 
     result = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
     assert not result.receipt.ok
@@ -1317,10 +1329,7 @@ def test_run_real_task_gate_happy_path_mocked(
         lambda *a, **k: {"gate_passed": True, "gate_failure_reasons": []},
     )
     monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
-    monkeypatch.setattr(
-        "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-        lambda: "/fake/motion-cursor-agent",
-    )
+    _patch_real_task_cursor_pins(monkeypatch)
 
     result = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
     assert result.receipt.ok is not delete_during_review
@@ -1390,10 +1399,7 @@ def test_verify_failure_skips_review(tmp_path: Path, monkeypatch: pytest.MonkeyP
         lambda *a, **k: {"gate_passed": True, "gate_failure_reasons": []},
     )
     monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
-    monkeypatch.setattr(
-        "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-        lambda: "/fake/motion-cursor-agent",
-    )
+    _patch_real_task_cursor_pins(monkeypatch)
 
     result = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
     assert review_calls == 0
@@ -1430,7 +1436,11 @@ def test_review_only_without_builder_state_fails(
         ),
         patch(
             "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-            return_value="/fake/motion-cursor-agent",
+            return_value=_FAKE_MOTION_CURSOR_WRAPPER,
+        ),
+        patch(
+            "dev.factory.gate_a_real.profile.trusted_cursor_vendor_binary",
+            return_value=_FAKE_TRUSTED_CURSOR_VENDOR,
         ),
     ):
         result = run_real_task_gate(
@@ -1584,10 +1594,7 @@ def test_post_review_scan_failure_leaves_null_manifest_sha(
         lambda *a, **k: {"gate_passed": True, "gate_failure_reasons": []},
     )
     monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
-    monkeypatch.setattr(
-        "dev.factory.gate_a_real.orchestration.resolve_cursor_executable",
-        lambda: "/fake/motion-cursor-agent",
-    )
+    _patch_real_task_cursor_pins(monkeypatch)
     monkeypatch.setattr(
         "dev.factory.gate_a_real.orchestration.collect_deliverables",
         flaky_collect,

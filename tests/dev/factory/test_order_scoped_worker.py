@@ -86,6 +86,19 @@ def _probe_pin() -> str:
     return fingerprint_probe_program(child_script_path())
 
 
+def _bypass_seatbelt_preflight_for_pure_execute_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pure argv/guard tests must not require macOS sandbox-exec at preflight."""
+    if sys.platform == "darwin":
+        return
+    monkeypatch.setattr(
+        OrderScopedWorkerAdapter,
+        "_ensure_platform_sandbox",
+        lambda _self: None,
+    )
+
+
 def test_stage_worker_disabled_by_default() -> None:
     assert not stage_worker_enabled({})
     assert not stage_worker_enabled({STAGE_WORKER_ENV: "0"})
@@ -142,7 +155,10 @@ def test_admit_rejects_backend_mismatch() -> None:
         )
 
 
-def test_binding_rejects_allow_network(tmp_path: Path) -> None:
+def test_binding_rejects_allow_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bypass_seatbelt_preflight_for_pure_execute_tests(monkeypatch)
     checkout = tmp_path / "co"
     checkout.mkdir()
     base = StageWorkOrderBinding.internal_stage_default(
@@ -189,6 +205,7 @@ def test_execute_refuses_when_feature_disabled(tmp_path: Path) -> None:
 
 
 def test_mutated_probe_script_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _bypass_seatbelt_preflight_for_pure_execute_tests(monkeypatch)
     checkout = tmp_path / "co"
     checkout.mkdir()
     trusted = child_script_path()
@@ -237,9 +254,12 @@ def test_worktree_symlink_escape_rejected(tmp_path: Path) -> None:
         assert_approved_worktree(link, bound_worktree=binding.worktree)
 
 
-def test_execute_rejects_symlink_worktree_without_side_effects(tmp_path: Path) -> None:
+def test_execute_rejects_symlink_worktree_without_side_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     if sys.platform == "win32":
         pytest.skip("symlink guard test is unix-oriented")
+    _bypass_seatbelt_preflight_for_pure_execute_tests(monkeypatch)
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -421,7 +441,10 @@ def test_unpinned_probe_inside_worktree_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_in_worktree_probe_rejected_at_execute(tmp_path: Path) -> None:
+def test_in_worktree_probe_rejected_at_execute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _bypass_seatbelt_preflight_for_pure_execute_tests(monkeypatch)
     checkout = tmp_path / "co"
     checkout.mkdir()
     in_tree = checkout / "probe.py"

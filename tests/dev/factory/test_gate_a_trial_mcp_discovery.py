@@ -16,6 +16,7 @@ from dev.factory.gate_a_trial.cursor_profile import (
     resolve_trial_cursor_executable,
 )
 from dev.factory.gate_a_trial.cursor_cli_sandbox import (
+    GateACursorCliSandbox,
     prepare_gate_a_cursor_cli_sandbox,
 )
 from dev.factory.gate_a_trial.mcp_discovery import (
@@ -38,6 +39,16 @@ from dev.factory.gate_a_trial.workspace_layout import (
     dispose_trial_workspace,
     materialize_disposable_trial_workspace,
 )
+
+
+def _fake_gate_a_sandbox(home: Path) -> GateACursorCliSandbox:
+    profile = home / "gate-a-fake.sb"
+    profile.write_text("(version 1)\n(allow default)\n", encoding="utf-8")
+    return GateACursorCliSandbox(
+        profile_path=profile,
+        profile_sha256="0" * 64,
+        home_dir=home,
+    )
 
 
 def test_parse_mcp_list_servers_and_tools() -> None:
@@ -224,7 +235,7 @@ def test_run_mcp_cli_wraps_discovery_argv_with_sandbox(
 ) -> None:
     home = tmp_path / "home"
     home.mkdir()
-    sandbox = prepare_gate_a_cursor_cli_sandbox(home)
+    sandbox = _fake_gate_a_sandbox(home)
     captured: list[list[str]] = []
 
     def _fake_run(argv: list[str], **_kwargs: object) -> object:
@@ -341,8 +352,8 @@ def test_orchestration_cleans_sandbox_profile_when_discovery_fails(tmp_path: Pat
     home.mkdir()
     profile_paths: list[Path] = []
 
-    def _capture_sandbox(isolated: Path) -> object:
-        sandbox = prepare_gate_a_cursor_cli_sandbox(isolated)
+    def _capture_sandbox(isolated: Path) -> GateACursorCliSandbox:
+        sandbox = _fake_gate_a_sandbox(isolated)
         profile_paths.append(sandbox.profile_path)
         return sandbox
 
