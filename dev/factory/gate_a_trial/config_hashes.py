@@ -161,11 +161,13 @@ def cli_config_steering_fingerprint(cli_config_path: Path) -> str:
 
 
 def _cli_config_steering_slice(payload: dict[str, Any]) -> dict[str, Any]:
-    return {key: payload.get(key) for key in sorted(CLI_CONFIG_STEERING_TOP_LEVEL) if key in payload}
+    return {
+        key: payload.get(key) for key in sorted(CLI_CONFIG_STEERING_TOP_LEVEL) if key in payload
+    }
 
 
 def cli_config_steering_absent_fingerprint() -> str:
-    """Fingerprint when ``steering`` and ``rewind`` are both absent (pre-warmup materialization)."""
+    """Fingerprint when ``steering`` and ``rewind`` are absent (pre-warmup materialization)."""
     return _sha256_bytes(_canonical_json_bytes({}))
 
 
@@ -218,7 +220,9 @@ def compare_cli_config_steering_after_warmup(
     observed = cli_config_steering_fingerprint(cli_config_path)
     if observed == baseline_steering_sha:
         return []
-    if steering_baseline_was_absent(baseline_steering_sha) and is_permitted_cursor_steering_warmup_init(
+    if steering_baseline_was_absent(
+        baseline_steering_sha
+    ) and is_permitted_cursor_steering_warmup_init(
         cli_config_path,
     ):
         return []
@@ -298,7 +302,12 @@ def is_allowed_home_cursor_session_relpath(
             and rel_posix == project_repo_json_relpath(slug)
         ):
             return True
-    if len(parts) == 4 and parts[0] == ".cursor" and parts[1] == "projects" and parts[3] == "worker.log":
+    if (
+        len(parts) == 4
+        and parts[0] == ".cursor"
+        and parts[1] == "projects"
+        and parts[3] == "worker.log"
+    ):
         return bool(parts[2])
     if (
         len(parts) == 4
@@ -353,7 +362,7 @@ def scan_forbidden_home_cursor_paths(
                 problems.append(f"forbidden home cursor path: {rel}")
                 break
         else:
-            if rel.endswith("/mcp-auth.json") or rel.endswith("mcp-auth.json"):
+            if rel.endswith(("/mcp-auth.json", "mcp-auth.json")):
                 problems.append(f"forbidden home cursor path: {rel}")
             elif not is_allowed_home_cursor_session_relpath(
                 rel,
@@ -411,9 +420,7 @@ def compare_post_positive_gate_a_security(
     if keys_base is not None:
         problems.extend(compare_cli_config_top_level_keys(keys_base, cli_path))
     project_slug = (
-        expected_cursor_project_slug(trial_workspace)
-        if trial_workspace is not None
-        else None
+        expected_cursor_project_slug(trial_workspace) if trial_workspace is not None else None
     )
     problems.extend(
         scan_forbidden_home_cursor_paths(

@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
-from dev.factory.seatbelt_fixture.executor import ChildRunResult, OrderScopedManifestExecutor, decode_child_payload
+from dev.factory.seatbelt_fixture.executor import (
+    ChildRunResult,
+    OrderScopedManifestExecutor,
+    decode_child_payload,
+)
 from dev.factory.seatbelt_fixture.manifest import FixtureReceipt, OrderManifest
 from dev.factory.seatbelt_fixture.validate import validate_manifest_before_spawn
 
@@ -82,7 +86,9 @@ class OrderScopedWorkerAdapter:
 
     def _ensure_platform_sandbox(self) -> None:
         if self._binding.sandbox_backend != "darwin_seatbelt":
-            raise OrderScopedWorkerError(f"unsupported sandbox backend: {self._binding.sandbox_backend}")
+            raise OrderScopedWorkerError(
+                f"unsupported sandbox backend: {self._binding.sandbox_backend}"
+            )
         if sys.platform != "darwin":
             raise OrderScopedWorkerError("darwin_seatbelt requires macOS")
         if shutil.which("sandbox-exec") is None:
@@ -119,9 +125,7 @@ class OrderScopedWorkerAdapter:
         if self._gate_receipt is None:
             raise ReceiptAdmissionError("no gate receipt supplied")
         if self._binding.gate_receipt_order_id != self._binding.order_id:
-            raise OrderScopedWorkerError(
-                "gate_receipt_order_id must match binding.order_id"
-            )
+            raise OrderScopedWorkerError("gate_receipt_order_id must match binding.order_id")
         try:
             self._admitted = admit_gate_receipt(
                 self._gate_receipt,

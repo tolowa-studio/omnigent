@@ -25,7 +25,10 @@ class TrustedGateAdmissionEvidence:
     __slots__ = ("_receipt",)
 
     def __init__(self, receipt: FixtureReceipt, *, _mint_capability: object) -> None:
-        if _mint_capability is not _RUNNER_MINT_CAPABILITY and _mint_capability is not _TEST_SEAM_CAPABILITY:
+        if (
+            _mint_capability is not _RUNNER_MINT_CAPABILITY
+            and _mint_capability is not _TEST_SEAM_CAPABILITY
+        ):
             raise ReceiptTrustError("untrusted gate receipt seal attempt")
         self._receipt = receipt
 
@@ -52,7 +55,9 @@ def register_gate_admission_test_seam(seam_capability: object) -> None:
     _TEST_SEAM_CAPABILITY = seam_capability
 
 
-def bind_trusted_gate_admission_for_runner(receipt: FixtureReceipt) -> TrustedGateAdmissionEvidence:
+def bind_trusted_gate_admission_for_runner(
+    receipt: FixtureReceipt,
+) -> TrustedGateAdmissionEvidence:
     """Mark *receipt* as minted by ``run_seatbelt_fixture`` (runner process only)."""
     evidence = TrustedGateAdmissionEvidence(receipt, _mint_capability=_RUNNER_MINT_CAPABILITY)
     setattr(receipt, _ADMISSION_EVIDENCE_ATTR, evidence)
@@ -68,7 +73,9 @@ def bind_trusted_gate_admission_for_tests(receipt: FixtureReceipt) -> TrustedGat
     return evidence
 
 
-def gate_admission_evidence_for_receipt(receipt: FixtureReceipt) -> TrustedGateAdmissionEvidence | None:
+def gate_admission_evidence_for_receipt(
+    receipt: FixtureReceipt,
+) -> TrustedGateAdmissionEvidence | None:
     evidence = getattr(receipt, _ADMISSION_EVIDENCE_ATTR, None)
     if isinstance(evidence, TrustedGateAdmissionEvidence):
         return evidence

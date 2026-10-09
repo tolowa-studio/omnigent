@@ -131,8 +131,12 @@ def test_effective_config_hash_stable_for_permissions(tmp_path: Path) -> None:
     workspace_mcp = tmp_path / "ws" / ".cursor" / "mcp.json"
     workspace_mcp.parent.mkdir(parents=True)
     workspace_mcp.write_text('{"mcpServers":{}}\n', encoding="utf-8")
-    first = effective_config_hashes(cursor_config_dir=config_dir, workspace_mcp_config=workspace_mcp)
-    second = effective_config_hashes(cursor_config_dir=config_dir, workspace_mcp_config=workspace_mcp)
+    first = effective_config_hashes(
+        cursor_config_dir=config_dir, workspace_mcp_config=workspace_mcp
+    )
+    second = effective_config_hashes(
+        cursor_config_dir=config_dir, workspace_mcp_config=workspace_mcp
+    )
     assert first == second
 
 
@@ -146,5 +150,5 @@ def test_isolated_home_marker_and_empty_cursor_manifest(tmp_path: Path) -> None:
 
 def test_deny_rules_include_foreign_mcp() -> None:
     deny = _deny_rules(["other-mcp"])
-    assert f"Mcp(other-mcp)" in deny
+    assert "Mcp(other-mcp)" in deny
     assert _allow_only_gate_a_tool() == [f"Mcp({MCP_SERVER_NAME}:{TOOL_NAME})"]

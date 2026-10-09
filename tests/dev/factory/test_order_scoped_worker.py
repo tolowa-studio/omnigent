@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from dev.factory.order_scoped.adapter import OrderScopedWorkerAdapter, OrderScopedWorkerError, decode_worker_child_payload
+from dev.factory.order_scoped.adapter import (
+    OrderScopedWorkerAdapter,
+    OrderScopedWorkerError,
+    decode_worker_child_payload,
+)
 from dev.factory.order_scoped.binding import (
     INTERNAL_STAGE_ORDER_ID,
     STAGE_WORKER_ENV,
@@ -33,13 +37,12 @@ from dev.factory.order_scoped.receipt_admission import (
 from dev.factory.order_scoped.worktree_guard import WorktreeGuardError, assert_approved_worktree
 from dev.factory.seatbelt_fixture.manifest import (
     GATE_A_MIN_SETTLE_SECONDS,
+    SEATBELT_FILE_DENIAL_ERRNOS,
     FixtureReceipt,
     ProbeRecord,
-    SEATBELT_FILE_DENIAL_ERRNOS,
     child_script_path,
 )
 from dev.factory.seatbelt_fixture.runner import run_seatbelt_fixture
-
 from tests.dev.factory.gate_admission_test_support import bind_trusted_gate_receipt_for_admission
 
 
@@ -155,9 +158,7 @@ def test_admit_rejects_backend_mismatch() -> None:
         )
 
 
-def test_binding_rejects_allow_network(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_binding_rejects_allow_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _bypass_seatbelt_preflight_for_pure_execute_tests(monkeypatch)
     checkout = tmp_path / "co"
     checkout.mkdir()

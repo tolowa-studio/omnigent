@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -94,7 +93,9 @@ class OrderScopedManifestExecutor:
         set_sandbox_env(env, scratch)
         return env
 
-    def execute(self, manifest: OrderManifest, *, timeout_seconds: float = 120.0) -> ChildRunResult:
+    def execute(
+        self, manifest: OrderManifest, *, timeout_seconds: float = 120.0
+    ) -> ChildRunResult:
         validate_manifest_before_spawn(
             manifest,
             bound_order_id=self._order_id,

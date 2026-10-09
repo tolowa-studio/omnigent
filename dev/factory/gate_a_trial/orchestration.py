@@ -30,21 +30,24 @@ from dev.factory.gate_a_trial.config_hashes import (
     scan_forbidden_home_cursor_paths,
     security_config_fingerprints,
 )
-from dev.factory.gate_a_trial.project_files import (
-    establish_project_files_baseline_after_warmup,
-    expected_cursor_project_slug,
-)
+from dev.factory.gate_a_trial.constants import TRIAL_HEADLESS_MODEL
 from dev.factory.gate_a_trial.cursor_cli_sandbox import (
     GateACursorCliSandbox,
     GateACursorCliSandboxError,
     denied_home_trees_have_content,
     prepare_gate_a_cursor_cli_sandbox,
 )
-from dev.factory.gate_a_trial.constants import TRIAL_HEADLESS_MODEL
-from dev.factory.gate_a_trial.cursor_profile import materialize_cursor_config_dir
+from dev.factory.gate_a_trial.cursor_profile import (
+    materialize_cursor_config_dir,
+    resolve_trial_cursor_executable,
+)
 from dev.factory.gate_a_trial.mcp_discovery import discover_and_gate_gate_a_mcp
 from dev.factory.gate_a_trial.positive_binding import verify_positive_mcp_receipt
 from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp, start_prestarted_gate_a_mcp
+from dev.factory.gate_a_trial.project_files import (
+    establish_project_files_baseline_after_warmup,
+    expected_cursor_project_slug,
+)
 from dev.factory.gate_a_trial.secret_redact import redact_mapping_strings
 from dev.factory.gate_a_trial.stream_json import (
     GateAPositiveMcpPayloadMode,
@@ -72,7 +75,6 @@ from dev.factory.gate_a_trial.workspace_layout import (
     materialize_disposable_trial_workspace,
 )
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_BRIEF_HASH
-from dev.factory.gate_a_trial.cursor_profile import resolve_trial_cursor_executable
 
 _NEGATIVE_HEADLESS_TIMEOUT_SECONDS = 180.0
 _POSITIVE_HEADLESS_TIMEOUT_SECONDS = 600.0
@@ -412,8 +414,7 @@ def _redact_mcp_tool_result(result: Any) -> Any:
                     new_blocks.append(new_block)
                 new_success["content"] = new_blocks
                 return {**result, "success": new_success}
-        cleaned = {k: _redact_mcp_tool_result(v) for k, v in result.items() if k != "artifact_path"}
-        return cleaned
+        return {k: _redact_mcp_tool_result(v) for k, v in result.items() if k != "artifact_path"}
     if isinstance(result, str):
         return _redact_json_text_payload(result)
     if isinstance(result, list):
@@ -474,12 +475,8 @@ def certify_positive_turn(
     if cli_failed:
         problems.append("headless CLI failed (nonzero exit, timeout, or subprocess error)")
     if not init_ok:
-        problems.append(
-            f"stream init rejected: {stream_result.get('stream_init_failure')}"
-        )
-    adapter_stream = (
-        evidence_root_parent is not None and admitted_brief_hash is not None
-    )
+        problems.append(f"stream init rejected: {stream_result.get('stream_init_failure')}")
+    adapter_stream = evidence_root_parent is not None and admitted_brief_hash is not None
     mcp_mode = (
         GateAPositiveMcpPayloadMode.ADAPTER
         if adapter_stream

@@ -7,13 +7,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
+from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
 from dev.factory.order_scoped.binding import (
     INTERNAL_STAGE_BRIEF_HASH,
     INTERNAL_STAGE_ORDER_ID,
     STAGE_WORKER_ENV,
 )
-from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
-from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
 FACTORY_GATE_A_CURSOR_CLI_ENV = "OMNIGENT_FACTORY_GATE_A_CURSOR_CLI"
 

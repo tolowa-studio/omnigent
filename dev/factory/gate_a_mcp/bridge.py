@@ -16,6 +16,8 @@ from dev.factory.gate_a_mcp.checkout import (
     dispose_worktree,
 )
 from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME
+from dev.factory.gate_a_mcp.preflight import GateAPreflightError, consume_preflight_receipt
+from dev.factory.gate_a_mcp.process_witness import stamp_gate_a_mcp_success_payload
 from dev.factory.order_scoped.adapter import (
     OrderScopedWorkerAdapter,
     OrderScopedWorkerError,
@@ -33,8 +35,6 @@ from dev.factory.seatbelt_fixture.manifest import (
     FixtureReceipt,
     child_script_path,
 )
-from dev.factory.gate_a_mcp.preflight import GateAPreflightError, consume_preflight_receipt
-from dev.factory.gate_a_mcp.process_witness import stamp_gate_a_mcp_success_payload
 
 
 class GateAMcpBridgeError(RuntimeError):

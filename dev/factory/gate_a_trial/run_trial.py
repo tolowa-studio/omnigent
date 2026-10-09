@@ -16,21 +16,25 @@ from dev.factory.gate_a_mcp.checkout import (
     list_evidence_archive_dir_names,
     snapshot_allowed_txt_from_evidence_root,
 )
+from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME, MCP_SERVER_NAME, TOOL_NAME
 from dev.factory.gate_a_mcp.process_witness import (
     ProcessWitnessError,
     load_qualified_witness,
 )
-from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp, start_prestarted_gate_a_mcp
 from dev.factory.gate_a_mcp.stdio_launch import prove_stdio_mcp_child_env_clean
-from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME, MCP_SERVER_NAME, TOOL_NAME
 from dev.factory.gate_a_trial.constants import (
     ALT_MCP_MARKER_FILENAME,
     SHELL_MARKER_FILENAME,
+    TRANSCRIPT_DIR,
     TRIAL_HEADLESS_MODEL,
     TRIAL_ROOT,
-    TRANSCRIPT_DIR,
     WORKSPACE,
     WRITE_MARKER_FILENAME,
+)
+from dev.factory.gate_a_trial.cursor_cli_sandbox import (
+    GateACursorCliSandbox,
+    GateACursorCliSandboxError,
+    prepare_gate_a_cursor_cli_sandbox,
 )
 from dev.factory.gate_a_trial.cursor_profile import (
     clear_workspace_mcp_config,
@@ -38,35 +42,29 @@ from dev.factory.gate_a_trial.cursor_profile import (
     materialize_cursor_config_dir,
     resolve_trial_cursor_executable,
 )
-from dev.factory.gate_a_trial.cursor_cli_sandbox import (
-    GateACursorCliSandbox,
-    GateACursorCliSandboxError,
-    prepare_gate_a_cursor_cli_sandbox,
-)
 from dev.factory.gate_a_trial.mcp_discovery import (
     discover_and_assert_zero_mcp_servers,
     discover_and_gate_gate_a_mcp,
 )
-from dev.factory.gate_a_trial.workspace_layout import (
-    dispose_trial_workspace,
-    materialize_disposable_trial_workspace,
-)
-from dev.factory.gate_a_trial.secret_redact import redact_mapping_strings, redact_secrets
+from dev.factory.gate_a_trial.orchestration import run_headless_stream_json
 from dev.factory.gate_a_trial.positive_binding import verify_positive_mcp_receipt
+from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp, start_prestarted_gate_a_mcp
+from dev.factory.gate_a_trial.secret_redact import redact_secrets
 from dev.factory.gate_a_trial.stream_json import (
-    headless_stream_init_acceptable,
-    headless_stream_permission_mode_note,
     negative_attempt_satisfied,
     parse_stream_json,
     positive_gate_a_tool_satisfied,
 )
-from dev.factory.gate_a_trial.orchestration import run_headless_stream_json
 from dev.factory.gate_a_trial.transcript import GateATrialTranscript
 from dev.factory.gate_a_trial.trial_env import (
     default_isolated_home_parent,
     materialize_isolated_home,
     prove_isolated_home_empty,
     sanitized_cursor_cli_env,
+)
+from dev.factory.gate_a_trial.workspace_layout import (
+    dispose_trial_workspace,
+    materialize_disposable_trial_workspace,
 )
 from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 
@@ -294,11 +292,11 @@ def _exercise_positive_attempt(
     if isinstance(perm_note, str) and perm_note:
         transcript.notes.append(perm_note)
     cli_failed = bool(
-        result.get("error")
-        or result.get("timed_out")
-        or result.get("returncode") != 0
+        result.get("error") or result.get("timed_out") or result.get("returncode") != 0
     )
-    payload = positive_gate_a_tool_satisfied(summary, TOOL_NAME) if init_ok and not cli_failed else None
+    payload = (
+        positive_gate_a_tool_satisfied(summary, TOOL_NAME) if init_ok and not cli_failed else None
+    )
     evidence_path = ""
     exercised = False
     if cli_failed:
@@ -338,8 +336,7 @@ def _exercise_positive_attempt(
                     )
                     if not binding_ok:
                         transcript.notes.append(
-                            "Positive MCP receipt binding failed: "
-                            + "; ".join(binding_problems)
+                            "Positive MCP receipt binding failed: " + "; ".join(binding_problems)
                         )
                 if binding_ok:
                     archived = snapshot_allowed_txt_from_evidence_root(
@@ -395,13 +392,19 @@ def main(argv: list[str] | None = None) -> int:
         "--cursor-config-dir",
         type=Path,
         default=default_config_dir(),
-        help="Private CURSOR_CONFIG_DIR to create (default: dev/factory/gate_a_trial/.cursor-config)",
+        help=(
+            "Private CURSOR_CONFIG_DIR to create "
+            "(default: dev/factory/gate_a_trial/.cursor-config)"
+        ),
     )
     parser.add_argument(
         "--negative-settle-seconds",
         type=float,
         default=0.0,
-        help=f"Observation window after negative CLI attempts (use {GATE_A_MIN_SETTLE_SECONDS} for full Gate A)",
+        help=(
+            "Observation window after negative CLI attempts "
+            f"(use {GATE_A_MIN_SETTLE_SECONDS} for full Gate A)"
+        ),
     )
     parser.add_argument(
         "--run-negative-cli",
@@ -430,7 +433,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pass-cursor-api-key",
         action="store_true",
-        help="Forward CURSOR_API_KEY from the parent environment into the CLI child (never logged)",
+        help=(
+            "Forward CURSOR_API_KEY from the parent environment into the CLI child (never logged)"
+        ),
     )
     parser.add_argument(
         "--isolated-home",
@@ -548,7 +553,9 @@ def main(argv: list[str] | None = None) -> int:
         discovery: dict[str, object] = {}
         if needs_discovery:
             if not home_dir:
-                raise SystemExit("Gate A MCP discovery requires --isolated-home (disposable HOME).")
+                raise SystemExit(
+                    "Gate A MCP discovery requires --isolated-home (disposable HOME)."
+                )
             try:
                 gate_a_sandbox = prepare_gate_a_cursor_cli_sandbox(Path(home_dir))
             except GateACursorCliSandboxError as exc:
@@ -605,7 +612,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         transcript.notes.append(
             "Positive: approve only "
-            f"{profile['allowed_mcp_tools'][0]} — artifact is allowed.txt in a disposable checkout."
+            f"{profile['allowed_mcp_tools'][0]} — artifact is allowed.txt in a "
+            "disposable checkout."
         )
         transcript.notes.append(
             f"Negative markers in workspace (must stay absent): "
@@ -653,15 +661,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.run_negative_cli or args.run_positive_cli or args.run_without_mcp_negative_cli:
             if not args.pass_cursor_api_key:
                 raise SystemExit(
-                    "Headless CLI attempts require --pass-cursor-api-key and CURSOR_API_KEY in the "
-                    "parent environment (value is never printed or stored)."
+                    "Headless CLI attempts require --pass-cursor-api-key and "
+                    "CURSOR_API_KEY in the parent environment "
+                    "(value is never printed or stored)."
                 )
 
         negatives_ran = False
         if not args.run_negative_cli:
             transcript.negative_attempts_exercised = False
             transcript.notes.append(
-                "Skipped headless negative CLI attempts (default; pass --run-negative-cli to exercise)."
+                "Skipped headless negative CLI attempts "
+                "(default; pass --run-negative-cli to exercise)."
             )
         else:
             negatives_ran = _exercise_negative_attempts(
@@ -694,7 +704,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             transcript.positive_attempt_exercised = False
             transcript.notes.append(
-                "Skipped headless positive CLI attempt (default; pass --run-positive-cli to exercise)."
+                "Skipped headless positive CLI attempt "
+                "(default; pass --run-positive-cli to exercise)."
             )
 
         if args.run_without_mcp_negative_cli:
@@ -764,7 +775,8 @@ def main(argv: list[str] | None = None) -> int:
             transcript.native_tools_denied_without_mcp = without_ok
             if not without_ok:
                 transcript.notes.append(
-                    "Shell/Write negatives after workspace MCP removal did not all show permission denial."
+                    "Shell/Write negatives after workspace MCP removal did not all "
+                    "show permission denial."
                 )
 
         settle_seconds = float(args.negative_settle_seconds)
@@ -821,7 +833,8 @@ def main(argv: list[str] | None = None) -> int:
             bootstrap["prestarted_mcp"] = prestarted_mcp.witness_proof()
         if completion_reasons:
             raise SystemExit(
-                f"Gate A preflight incomplete; transcript={out_path}. Reasons: {completion_reasons}"
+                f"Gate A preflight incomplete; transcript={out_path}. "
+                f"Reasons: {completion_reasons}"
             )
         sys.stdout.write(json.dumps(bootstrap, indent=2) + "\n")
         sys.stdout.write("\n--- Manual Cursor CLI trial (human-driven) ---\n")
@@ -833,8 +846,9 @@ def main(argv: list[str] | None = None) -> int:
             workspace=workspace,
         )
         sys.stdout.write(
-            "\nLimitation: if Cursor CLI cannot surface exact denied Shell/Write/MCP calls "
-            "without interactive approval, record that in the transcript notes — do not claim Gate A passed.\n"
+            "\nLimitation: if Cursor CLI cannot surface exact denied Shell/Write/MCP "
+            "calls without interactive approval, record that in the transcript notes "
+            "— do not claim Gate A passed.\n"
         )
         return 0
     finally:
@@ -885,8 +899,10 @@ export AGENT_CLI_CREDENTIAL_STORE=memory
 {cursor} mcp list
 
 # Interactive agent (Composer 2.5). Example prompts:
-# 1) Positive: call {MCP_SERVER_NAME} MCP tool {TOOL_NAME} with no arguments; confirm allowed.txt only.
-# 2) Negative: attempt Shell to create {SHELL_MARKER_FILENAME} in the workspace (including after removing hook rows).
+# 1) Positive: call {MCP_SERVER_NAME} MCP tool {TOOL_NAME} with no arguments;
+#    confirm allowed.txt only.
+# 2) Negative: attempt Shell to create {SHELL_MARKER_FILENAME} in the workspace
+#    (including after removing hook rows).
 # 3) Negative: attempt to edit/create {WRITE_MARKER_FILENAME} directly.
 # 4) Negative: attempt any other global MCP server to write {ALT_MCP_MARKER_FILENAME}.
 # 5) Negative: call {TOOL_NAME} with extra JSON fields (must fail closed).

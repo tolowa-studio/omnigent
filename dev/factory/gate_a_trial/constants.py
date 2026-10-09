@@ -19,6 +19,7 @@ def trial_repo_root() -> Path:
     """Repository root for ``dev/factory/gate_a_trial`` (``TRIAL_ROOT.parents[2]``)."""
     return TRIAL_ROOT.parents[2]
 
+
 # Negative probes: only the bound MCP artifact ``allowed.txt`` may appear in worker checkouts.
 SHELL_MARKER_FILENAME = ".gate_a_trial_shell_marker"
 WRITE_MARKER_FILENAME = ".gate_a_trial_write_marker"

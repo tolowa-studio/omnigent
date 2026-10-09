@@ -8,18 +8,22 @@ import os
 import shutil
 import sys
 from pathlib import Path
+
 import pytest
 
+from dev.factory.seatbelt_fixture import __main__ as fixture_cli
 from dev.factory.seatbelt_fixture import child_main
 from dev.factory.seatbelt_fixture.manifest import (
     CANARY_FILE_TOKEN,
+    GATE_A_MIN_SETTLE_SECONDS,
     HOME_PROBE_DIR_PREFIX,
     HOME_SENTINEL_FILENAME,
     HOME_SENTINEL_TOKEN,
+    FixtureReceipt,
     OrderManifest,
+    ProbeRecord,
     child_script_path,
 )
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS, FixtureReceipt, ProbeRecord
 from dev.factory.seatbelt_fixture.runner import (
     _create_home_sentinel,
     _negative_probe_ok,
@@ -27,8 +31,10 @@ from dev.factory.seatbelt_fixture.runner import (
     run_seatbelt_fixture,
     run_validation_smoke,
 )
-from dev.factory.seatbelt_fixture import __main__ as fixture_cli
-from dev.factory.seatbelt_fixture.validate import ManifestValidationError, validate_manifest_before_spawn
+from dev.factory.seatbelt_fixture.validate import (
+    ManifestValidationError,
+    validate_manifest_before_spawn,
+)
 
 _FIXTURE_RECEIPT_JSON_KEYS = (
     "manifest_hash",
@@ -68,10 +74,7 @@ def test_parse_fixture_cli_receipt_stdout_ignores_log_prefix() -> None:
         sort_keys=True,
         separators=(",", ":"),
     )
-    stdout = (
-        "WARNING omnigent.inner.seatbelt_sandbox: auto-widened write grant\n"
-        f"{receipt_line}\n"
-    )
+    stdout = f"WARNING omnigent.inner.seatbelt_sandbox: auto-widened write grant\n{receipt_line}\n"
     parsed = _parse_fixture_cli_receipt_stdout(stdout)
     assert parsed["passed"] is False
     assert parsed["qualified_for_gate_a"] is False
@@ -116,7 +119,12 @@ def test_validate_rejects_shell_and_traversal(tmp_path: Path) -> None:
     traversal = OrderManifest(
         order_id="o1",
         verb="probe_outside_read",
-        argv=(str(python), str(child), "probe_outside_read", str(tmp_path / ".." / "etc" / "passwd")),
+        argv=(
+            str(python),
+            str(child),
+            "probe_outside_read",
+            str(tmp_path / ".." / "etc" / "passwd"),
+        ),
         cwd=str(checkout),
     )
     with pytest.raises(ManifestValidationError, match="traversal"):
@@ -459,14 +467,13 @@ def test_child_home_read_nonexistent_path_fails(capsys: pytest.CaptureFixture[st
     assert payload.get("read_denial_errno") == errno.ENOENT
 
 
-def test_create_home_sentinel_cleans_probe_dir_on_write_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_home_sentinel_cleans_probe_dir_on_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     real_write_text = Path.write_text
 
     def failing_write(self: Path, *args: object, **kwargs: object) -> int:
-        if (
-            self.name == HOME_SENTINEL_FILENAME
-            and HOME_PROBE_DIR_PREFIX in self.parent.name
-        ):
+        if self.name == HOME_SENTINEL_FILENAME and HOME_PROBE_DIR_PREFIX in self.parent.name:
             raise OSError("injected sentinel write failure")
         return real_write_text(self, *args, **kwargs)
 

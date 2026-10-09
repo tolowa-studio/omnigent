@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
 from dev.factory.order_scoped.binding import (
     INTERNAL_STAGE_BRIEF_HASH,
@@ -25,14 +27,11 @@ from omnigent.factory.gate_a.admission import (
     validate_config_hash_drift,
     validate_fixture_scope,
     validate_mcp_payload_against_admission,
-    validate_not_expired,
     validate_witness_matches_prestarted,
 )
 from omnigent.factory.gate_a.cursor_cli_session import run_admitted_session
 from omnigent.inner import cursor_harness
 from omnigent.runtime.harnesses import _HARNESS_MODULES
-from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
-import time
 
 
 def _sample_admission(

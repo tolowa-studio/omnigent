@@ -109,7 +109,10 @@ def test_run_trial_passes_sandbox_to_discovery_and_zero_server_probe(tmp_path: P
             "dev.factory.gate_a_trial.run_trial.discover_and_assert_zero_mcp_servers",
             side_effect=_zero,
         ),
-        patch("dev.factory.gate_a_trial.run_trial.GateATrialTranscript.write", return_value=tmp_path / "t.json"),
+        patch(
+            "dev.factory.gate_a_trial.run_trial.GateATrialTranscript.write",
+            return_value=tmp_path / "t.json",
+        ),
     ):
         assert (
             main(
@@ -186,7 +189,10 @@ def test_run_trial_cleans_up_sandbox_when_discovery_gate_fails(tmp_path: Path) -
                 "gate_failure_reasons": ["synthetic discovery failure"],
             },
         ),
-        patch("dev.factory.gate_a_trial.run_trial.GateATrialTranscript.write", return_value=tmp_path / "t.json"),
+        patch(
+            "dev.factory.gate_a_trial.run_trial.GateATrialTranscript.write",
+            return_value=tmp_path / "t.json",
+        ),
     ):
         with pytest.raises(SystemExit):
             main(["--cursor-config-dir", str(config_dir), "--inspect-cli"])

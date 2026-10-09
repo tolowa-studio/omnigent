@@ -13,7 +13,6 @@ steering slice; cosmetic cache fields are accepted when policy is stable.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,13 +20,13 @@ from typing import Any
 
 from dev.factory.gate_a_mcp.constants import MCP_SERVER_NAME, TOOL_NAME
 from dev.factory.gate_a_mcp.stdio_launch import gate_a_stdio_mcp_launch
-from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
 from dev.factory.gate_a_trial.config_hashes import effective_config_hashes
 from dev.factory.gate_a_trial.constants import (
     MANAGED_CURSOR_AGENT_EXECUTABLE,
     TRIAL_ROOT,
     WORKSPACE,
 )
+from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
 
 _NATIVE_DENY_TOOLS = (
     "Shell",
@@ -174,8 +173,12 @@ def materialize_cursor_config_dir(
             "deny": _deny_rules(global_names),
         },
     }
-    (target / "cli-config.json").write_text(json.dumps(cli_config, indent=2) + "\n", encoding="utf-8")
-    (target / "mcp.json").write_text(json.dumps({"mcpServers": {}}, indent=2) + "\n", encoding="utf-8")
+    (target / "cli-config.json").write_text(
+        json.dumps(cli_config, indent=2) + "\n", encoding="utf-8"
+    )
+    (target / "mcp.json").write_text(
+        json.dumps({"mcpServers": {}}, indent=2) + "\n", encoding="utf-8"
+    )
 
     workspace_mcp = write_workspace_mcp_config(
         python_executable=python_executable,

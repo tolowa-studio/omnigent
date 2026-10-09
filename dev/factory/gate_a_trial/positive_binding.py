@@ -98,9 +98,7 @@ def verify_positive_mcp_receipt(
     if isinstance(settle, bool) or not isinstance(settle, (int, float)):
         problems.append("settle_observed_seconds must be a number")
     elif float(settle) < GATE_A_MIN_SETTLE_SECONDS:
-        problems.append(
-            f"settle_observed_seconds must be >= {GATE_A_MIN_SETTLE_SECONDS}"
-        )
+        problems.append(f"settle_observed_seconds must be >= {GATE_A_MIN_SETTLE_SECONDS}")
 
     artifact_name = payload.get("artifact")
     if artifact_name != BOUND_ARTIFACT_FILENAME:
@@ -189,7 +187,9 @@ def verify_positive_mcp_receipt(
                     problems.append(
                         "MCP server HOME preflight marker missing or not bound to server pid"
                     )
-                elif abs(marker_settle - witness_settle) > SETTLE_PAYLOAD_WITNESS_TOLERANCE_SECONDS:
+                elif (
+                    abs(marker_settle - witness_settle) > SETTLE_PAYLOAD_WITNESS_TOLERANCE_SECONDS
+                ):
                     problems.append(
                         "preflight HOME marker settle_observed_seconds does not match witness"
                     )

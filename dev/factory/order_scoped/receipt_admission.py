@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS, FixtureReceipt, ProbeRecord
+from dev.factory.seatbelt_fixture.manifest import (
+    GATE_A_MIN_SETTLE_SECONDS,
+    FixtureReceipt,
+    ProbeRecord,
+)
 from dev.factory.seatbelt_fixture.runner import _qualified_for_gate_a
 from dev.factory.seatbelt_fixture.trusted_admission import (
     TrustedGateAdmissionEvidence,
@@ -90,9 +94,7 @@ def assert_receipt_path_outside_worktree(receipt_path: Path, *, worktree: Path) 
         receipt_real.relative_to(worktree_real)
     except ValueError:
         return
-    raise ReceiptAdmissionError(
-        f"gate receipt path must not live inside worktree: {receipt_path}"
-    )
+    raise ReceiptAdmissionError(f"gate receipt path must not live inside worktree: {receipt_path}")
 
 
 def load_receipt_json(path: Path) -> FixtureReceipt:
@@ -124,7 +126,8 @@ def admit_gate_receipt(
         raise ReceiptAdmissionError("gate receipt not minted by trusted fixture runner")
     if receipt.sandbox_backend != expected_sandbox_backend:
         raise ReceiptAdmissionError(
-            f"sandbox backend mismatch: {receipt.sandbox_backend!r} != {expected_sandbox_backend!r}"
+            "sandbox backend mismatch: "
+            f"{receipt.sandbox_backend!r} != {expected_sandbox_backend!r}"
         )
     if receipt.order_id != expected_order_id:
         raise ReceiptAdmissionError(
@@ -143,7 +146,8 @@ def admit_gate_receipt(
 
     if receipt.settle_observed_seconds < GATE_A_MIN_SETTLE_SECONDS:
         raise ReceiptAdmissionError(
-            f"settle window too short: {receipt.settle_observed_seconds} < {GATE_A_MIN_SETTLE_SECONDS}"
+            "settle window too short: "
+            f"{receipt.settle_observed_seconds} < {GATE_A_MIN_SETTLE_SECONDS}"
         )
 
     if not receipt.qualified_for_gate_a:

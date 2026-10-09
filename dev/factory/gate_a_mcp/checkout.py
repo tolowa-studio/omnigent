@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import stat
@@ -116,13 +117,9 @@ def _copy_regular_file_fail_closed(source: Path, dest: Path) -> None:
         if not stat.S_ISREG(fst.st_mode):
             raise ValueError("refusing to copy source: artifact_path_not_regular_file")
         if (lst.st_dev, lst.st_ino) != (fst.st_dev, fst.st_ino):
-            raise ValueError(
-                "refusing to copy source: artifact_replaced_between_check_and_open"
-            )
+            raise ValueError("refusing to copy source: artifact_replaced_between_check_and_open")
 
-        write_flags = (
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-        )
+        write_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         dest_fd: int | None = None
         dest_opened = False
         copy_ok = False
@@ -149,10 +146,8 @@ def _copy_regular_file_fail_closed(source: Path, dest: Path) -> None:
             if dest_fd is not None:
                 os.close(dest_fd)
             if dest_opened and not copy_ok:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(dest)
-                except OSError:
-                    pass
     finally:
         os.close(src_fd)
 
@@ -256,7 +251,8 @@ def snapshot_allowed_txt_from_evidence_root(
 
     if artifact_path.name != BOUND_ARTIFACT_FILENAME:
         raise ValueError(
-            f"refusing to snapshot {artifact_path.name!r}; expected basename {BOUND_ARTIFACT_FILENAME!r}"
+            f"refusing to snapshot {artifact_path.name!r}; "
+            f"expected basename {BOUND_ARTIFACT_FILENAME!r}"
         )
     under, reason, root = artifact_path_under_canonical_evidence_root(artifact_path, parent=parent)
     if not under or root is None:

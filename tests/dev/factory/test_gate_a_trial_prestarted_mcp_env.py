@@ -43,9 +43,7 @@ def test_prestarted_server_tmpdir_matches_harness_under_macos_style_tmpdir(
     assert "MCP_CONFIG" not in env
 
 
-_V27_REAL_POSITIVE_TRANSCRIPT = (
-    "stream-positive_gate_a_mcp_tool-20261008T061608Z.stdout.jsonl"
-)
+_V27_REAL_POSITIVE_TRANSCRIPT = "stream-positive_gate_a_mcp_tool-20261008T061608Z.stdout.jsonl"
 
 
 def _gate_a_repo_root() -> Path:

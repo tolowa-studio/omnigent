@@ -11,13 +11,13 @@ from pathlib import Path
 import pytest
 
 from dev.factory.gate_a_mcp.constants import MCP_SERVER_NAME, TOOL_NAME
-from dev.factory.gate_a_trial.cursor_profile import (
-    materialize_cursor_config_dir,
-    resolve_trial_cursor_executable,
-)
 from dev.factory.gate_a_trial.cursor_cli_sandbox import (
     GateACursorCliSandbox,
     prepare_gate_a_cursor_cli_sandbox,
+)
+from dev.factory.gate_a_trial.cursor_profile import (
+    materialize_cursor_config_dir,
+    resolve_trial_cursor_executable,
 )
 from dev.factory.gate_a_trial.mcp_discovery import (
     _run_mcp_cli,
@@ -248,7 +248,12 @@ def test_run_mcp_cli_wraps_discovery_argv_with_sandbox(
         "dev.factory.gate_a_trial.mcp_discovery.run_in_new_session",
         _fake_run,
     )
-    for args in (("list",), ("enable", MCP_SERVER_NAME), ("list",), ("list-tools", MCP_SERVER_NAME)):
+    for args in (
+        ("list",),
+        ("enable", MCP_SERVER_NAME),
+        ("list",),
+        ("list-tools", MCP_SERVER_NAME),
+    ):
         _run_mcp_cli(
             "agent",
             str(tmp_path / "ws"),
@@ -327,7 +332,9 @@ def test_unsandboxed_agent_mcp_list_hydrates_compile_cache_guard(tmp_path: Path)
         finally:
             sandbox.cleanup()
         cache2 = home2 / "Library" / "Caches" / "cursor-compile-cache"
-        sandboxed_count = sum(1 for p in cache2.rglob("*") if p.is_file()) if cache2.exists() else 0
+        sandboxed_count = (
+            sum(1 for p in cache2.rglob("*") if p.is_file()) if cache2.exists() else 0
+        )
         assert sandboxed_count == 0
     finally:
         dispose_trial_workspace(ws)
@@ -433,16 +440,23 @@ def test_orchestration_cleans_sandbox_profile_when_discovery_fails(tmp_path: Pat
             ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_trial_workspace", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_trial_workspace", return_value=None
+            ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_trial_config_dir", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_trial_config_dir",
+                return_value=None,
+            ),
         )
         stack.enter_context(
             patch("dev.factory.gate_a_trial.orchestration.dispose_trial_path", return_value=None),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_isolated_home", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_isolated_home", return_value=None
+            ),
         )
         result = run_admitted_gate_a_turn(
             order_id=INTERNAL_STAGE_ORDER_ID,

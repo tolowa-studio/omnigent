@@ -13,7 +13,6 @@ import pytest
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 
 from dev.factory.gate_a_mcp.preflight import (
-    install_preflight_receipt_for_tests,
     reset_preflight_session_for_tests,
 )
 from dev.factory.gate_a_mcp.process_witness import (
@@ -34,8 +33,12 @@ from dev.factory.gate_a_trial.prestarted_mcp import (
     start_prestarted_gate_a_mcp,
 )
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_ORDER_ID
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS, FixtureReceipt, ProbeRecord
 from dev.factory.order_scoped.receipt_admission import GATE_A_EXACT_PROBE_NAMES
+from dev.factory.seatbelt_fixture.manifest import (
+    GATE_A_MIN_SETTLE_SECONDS,
+    FixtureReceipt,
+    ProbeRecord,
+)
 from tests.dev.factory.gate_admission_test_support import bind_trusted_gate_receipt_for_admission
 
 
@@ -128,8 +131,11 @@ def _spawn_test_http_server(
     from dev.factory.order_scoped.binding import STAGE_WORKER_ENV
 
     env[STAGE_WORKER_ENV] = "1"
-    bootstrap = f"""
-from dev.factory.gate_a_mcp.preflight import install_preflight_receipt_for_tests, reset_preflight_session_for_tests
+    bootstrap = """
+from dev.factory.gate_a_mcp.preflight import (
+    install_preflight_receipt_for_tests,
+    reset_preflight_session_for_tests,
+)
 from dev.factory.gate_a_mcp.http_serve import run_prestarted_http_server
 from tests.dev.factory.test_gate_a_mcp_http_loopback import _qualified_receipt
 reset_preflight_session_for_tests()
@@ -173,7 +179,9 @@ def test_authenticated_mcp_initialize_list_tools_on_live_server(tmp_path: Path) 
         dispose_gate_a_mcp_control_dir(control, allowed_parent=parent)
 
 
-def test_start_failure_disposes_control_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_start_failure_disposes_control_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     parent = tmp_path / "parent"
     parent.mkdir()
 
@@ -211,8 +219,11 @@ def test_early_witness_before_bind_waits_for_transport(tmp_path: Path) -> None:
     from dev.factory.order_scoped.binding import STAGE_WORKER_ENV
 
     env[STAGE_WORKER_ENV] = "1"
-    bootstrap = f"""
-from dev.factory.gate_a_mcp.preflight import install_preflight_receipt_for_tests, reset_preflight_session_for_tests
+    bootstrap = """
+from dev.factory.gate_a_mcp.preflight import (
+    install_preflight_receipt_for_tests,
+    reset_preflight_session_for_tests,
+)
 from dev.factory.gate_a_mcp.http_serve import run_prestarted_http_server
 from tests.dev.factory.test_gate_a_mcp_http_loopback import _qualified_receipt
 reset_preflight_session_for_tests()
@@ -243,7 +254,10 @@ run_prestarted_http_server()
 
 
 def test_never_binding_endpoint_not_false_ready(tmp_path: Path) -> None:
-    from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness, write_qualified_witness
+    from dev.factory.gate_a_mcp.process_witness import (
+        QualifiedProcessWitness,
+        write_qualified_witness,
+    )
 
     parent = tmp_path / "parent"
     parent.mkdir()
@@ -264,7 +278,7 @@ def test_never_binding_endpoint_not_false_ready(tmp_path: Path) -> None:
     write_qualified_witness(control, witness)
     with pytest.raises(
         (ProcessWitnessError, LoopbackTransportNotReady),
-        match="timed out|not accepting|not ready",
+        match=r"timed out|not accepting|not ready",
     ):
         qualify_process_witness_transport(
             witness,

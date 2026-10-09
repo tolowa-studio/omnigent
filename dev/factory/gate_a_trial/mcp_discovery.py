@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from dev.factory.gate_a_mcp.constants import MCP_SERVER_NAME, TOOL_NAME
+from dev.factory.gate_a_trial.config_hashes import trial_private_config_fingerprints
 from dev.factory.gate_a_trial.cursor_cli_sandbox import GateACursorCliSandbox
 from dev.factory.gate_a_trial.secret_redact import redact_mapping_strings
 from dev.factory.gate_a_trial.subprocess_session import run_in_new_session
-from dev.factory.gate_a_trial.config_hashes import trial_private_config_fingerprints
 from dev.factory.gate_a_trial.trial_env import pre_enable_home_must_be_pristine
 
 _NO_SERVERS_PREFIX = "No MCP servers configured"
@@ -117,7 +117,8 @@ def validate_zero_mcp_servers_discovery(
         reasons.append(f"mcp list exit {list_returncode} (required 0)")
     if servers:
         reasons.append(
-            f"expected 0 MCP servers after workspace mcp.json removal, got {len(servers)}: {servers!r}"
+            "expected 0 MCP servers after workspace mcp.json removal, "
+            f"got {len(servers)}: {servers!r}"
         )
     if _NO_SERVERS_PREFIX not in (list_stdout or "") and not servers:
         # Some CLI builds may omit the prefix when the list is empty; servers==0 is enough.
@@ -154,9 +155,10 @@ def discover_and_assert_zero_mcp_servers(
         )
         out.update(validation)
         out["gate_passed"] = False
-        out["gate_failure_reasons"] = [str(listing["error"])] + list(
-            out.get("gate_failure_reasons") or []
-        )
+        out["gate_failure_reasons"] = [
+            str(listing["error"]),
+            *list(out.get("gate_failure_reasons") or []),
+        ]
         return out
     validation = validate_zero_mcp_servers_discovery(
         list_stdout=str(listing.get("stdout") or ""),
@@ -206,7 +208,8 @@ def validate_gate_a_discovery(
         status = parse_mcp_list_server_status(post_enable_list_stdout, MCP_SERVER_NAME)
         if not mcp_server_listing_usable(status):
             reasons.append(
-                f"post-enable server status must be {_POST_ENABLE_REQUIRED_STATUS!r}, got {status!r}"
+                "post-enable server status must be "
+                f"{_POST_ENABLE_REQUIRED_STATUS!r}, got {status!r}"
             )
 
     if len(tools) != 1:
@@ -314,9 +317,10 @@ def discover_and_gate_gate_a_mcp(
             )
         )
         out["gate_passed"] = False
-        out["gate_failure_reasons"] = [str(listing["error"])] + list(
-            out.get("gate_failure_reasons") or []
-        )
+        out["gate_failure_reasons"] = [
+            str(listing["error"]),
+            *list(out.get("gate_failure_reasons") or []),
+        ]
         return out
 
     servers = parse_mcp_list_server_names(str(listing.get("stdout") or ""))

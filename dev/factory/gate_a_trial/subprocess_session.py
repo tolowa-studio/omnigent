@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 _GRACE_SECONDS = 5.0
 _REAP_POLL_SECONDS = 0.05
@@ -80,10 +81,8 @@ def _kill_process_group(leader_pid: int) -> None:
         time.sleep(_REAP_POLL_SECONDS)
 
     if _process_group_alive(pgid):
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(pgid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     _reap_direct_child(leader_pid)
 
 
@@ -118,11 +117,15 @@ def run_in_new_session(
     except subprocess.TimeoutExpired:
         _kill_process_group(proc.pid)
         stdout_b, stderr_b = proc.communicate()
-        stdout = stdout_b if isinstance(stdout_b, str) else (stdout_b or b"").decode(
-            "utf-8", errors="replace"
+        stdout = (
+            stdout_b
+            if isinstance(stdout_b, str)
+            else (stdout_b or b"").decode("utf-8", errors="replace")
         )
-        stderr = stderr_b if isinstance(stderr_b, str) else (stderr_b or b"").decode(
-            "utf-8", errors="replace"
+        stderr = (
+            stderr_b
+            if isinstance(stderr_b, str)
+            else (stderr_b or b"").decode("utf-8", errors="replace")
         )
         return SubprocessResult(
             argv=argv,

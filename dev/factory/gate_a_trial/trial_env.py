@@ -59,9 +59,7 @@ def prove_isolated_home_empty(home: Path) -> dict[str, object]:
     Harness-owned ``.gate-a-disposable-home`` is excluded from the cursor manifest hash.
     """
     manifest = isolated_home_inventory_manifest(home)
-    cursor_paths = [
-        p for p in manifest if p == ".cursor" or p.startswith(".cursor/")
-    ]
+    cursor_paths = [p for p in manifest if p == ".cursor" or p.startswith(".cursor/")]
     harness_paths = [p for p in manifest if p == _DISPOSABLE_HOME_MARKER]
     cursor_manifest_bytes = json.dumps(cursor_paths, sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
@@ -90,9 +88,7 @@ def pre_enable_home_must_be_pristine(home: Path) -> list[str]:
     for path in sorted(cursor_home.rglob("*")):
         if path.is_file():
             rel = path.relative_to(home).as_posix()
-            reasons.append(
-                f"pre-enable HOME must not contain Cursor state (found {rel})"
-            )
+            reasons.append(f"pre-enable HOME must not contain Cursor state (found {rel})")
     return reasons
 
 

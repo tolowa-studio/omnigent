@@ -9,15 +9,14 @@ from contextlib import asynccontextmanager
 
 import anyio
 import uvicorn
+from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
-
-from mcp.server.fastmcp.server import StreamableHTTPASGIApp
-from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-from mcp.server.transport_security import TransportSecuritySettings
 
 from dev.factory.gate_a_mcp.preflight import (
     GateAPreflightError,
@@ -111,7 +110,9 @@ def run_prestarted_http_server() -> None:
         settle_observed_seconds=receipt.settle_observed_seconds,
         order_id=receipt.order_id or INTERNAL_STAGE_ORDER_ID,
     )
-    test_delay_bind_seconds = float(os.environ.get("GATE_A_MCP_TEST_DELAY_BIND_SECONDS", "0") or "0")
+    test_delay_bind_seconds = float(
+        os.environ.get("GATE_A_MCP_TEST_DELAY_BIND_SECONDS", "0") or "0"
+    )
     if test_delay_bind_seconds > 0:
         write_qualified_witness(control_dir, witness)
         write_endpoint_descriptor(

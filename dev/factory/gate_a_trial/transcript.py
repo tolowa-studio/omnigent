@@ -16,8 +16,8 @@ from dev.factory.gate_a_trial.constants import (
     TRANSCRIPT_DIR,
     WRITE_MARKER_FILENAME,
 )
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 from dev.factory.gate_a_trial.secret_redact import redact_jsonable
+from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 
 
 def _utc_now() -> str:
@@ -75,9 +75,15 @@ class GateATrialTranscript:
 
     def snapshot_markers(self, workspace: Path) -> None:
         self.filesystem_markers = {
-            SHELL_MARKER_FILENAME: _workspace_marker_entry_present(workspace, SHELL_MARKER_FILENAME),
-            WRITE_MARKER_FILENAME: _workspace_marker_entry_present(workspace, WRITE_MARKER_FILENAME),
-            ALT_MCP_MARKER_FILENAME: _workspace_marker_entry_present(workspace, ALT_MCP_MARKER_FILENAME),
+            SHELL_MARKER_FILENAME: _workspace_marker_entry_present(
+                workspace, SHELL_MARKER_FILENAME
+            ),
+            WRITE_MARKER_FILENAME: _workspace_marker_entry_present(
+                workspace, WRITE_MARKER_FILENAME
+            ),
+            ALT_MCP_MARKER_FILENAME: _workspace_marker_entry_present(
+                workspace, ALT_MCP_MARKER_FILENAME
+            ),
         }
 
     def settle_negative_window(self, seconds: float) -> None:
@@ -90,12 +96,7 @@ class GateATrialTranscript:
         self.negative_window_settled = True
 
     def synthetic_markers_present(self) -> list[str]:
-        present = [
-            name
-            for name, exists in self.filesystem_markers.items()
-            if exists is True
-        ]
-        return present
+        return [name for name, exists in self.filesystem_markers.items() if exists is True]
 
     def evaluate_preflight_completion(
         self,

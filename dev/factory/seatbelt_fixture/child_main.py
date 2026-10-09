@@ -160,7 +160,7 @@ def _run_probe_home_read(home_sentinel_path: str) -> int:
             detail = "read denied"
         else:
             detail = f"read failed errno={exc.errno}"
-    except Exception:
+    except Exception:  # noqa: BLE001 — non-OSError failures abort the seatbelt probe
         executed = False
         detail = "probe aborted with non-seatbelt error"
     else:
@@ -318,7 +318,13 @@ def main(argv: list[str] | None = None) -> int:
         return _run_probe_home_read(args[1])
     if verb == "probe_home_symlink":
         if len(args) != 3:
-            _emit({"ok": False, "detail": "home sentinel path and link name required", "executed": False})
+            _emit(
+                {
+                    "ok": False,
+                    "detail": "home sentinel path and link name required",
+                    "executed": False,
+                }
+            )
             return 2
         return _run_probe_home_symlink(args[1], args[2])
     _emit({"ok": False, "detail": "unreachable"})

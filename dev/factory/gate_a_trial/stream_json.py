@@ -21,7 +21,8 @@ _ALLOWLIST_POLICY_IN_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _SCHEMA_ARGUMENT_REJECTION_RE = re.compile(
-    r"(field required|additional properties|extra inputs are not permitted|unexpected property|validation error|unexpected argument|forbidden argument)",
+    r"(field required|additional properties|extra inputs are not permitted|"
+    r"unexpected property|validation error|unexpected argument|forbidden argument)",
     re.IGNORECASE,
 )
 _RECOGNIZED_TOOL_CALL_VARIANT_KEYS = frozenset(
@@ -160,6 +161,8 @@ class GateAPositiveMcpPayloadMode(str, Enum):
 
     LEGACY_V34 = "legacy_v34"
     ADAPTER = "adapter"
+
+
 _SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
 _MCP_2026_SUCCESS_KEYS = frozenset({"content", "isError", "systemReminders"})
 
@@ -181,7 +184,7 @@ class StreamJsonSummary:
     permission_mode: str | None = None
     tool_calls: list[ToolCallObservation] = field(default_factory=list)
     unparsed_tool_call_variants: list[dict[str, Any]] = field(default_factory=list)
-    # Installed 2026 CLI emits matched started/completed pairs; release predicates ignore legacy rows.
+    # 2026 CLI emits matched started/completed pairs; release predicates ignore legacy rows.
     matched_2026_call_ids: set[str] = field(default_factory=set)
     legacy_tool_call_events: int = 0
 
@@ -211,7 +214,7 @@ class StreamJsonSummary:
         return False
 
     def native_shell_write_calls_denied(self) -> bool:
-        """Every matched 2026 Shell/Write pair must be a structured allowlist denial bound to args."""
+        """Every matched 2026 Shell/Write pair is a structured allowlist denial bound to args."""
         if not _gate_a_release_certification_ready(self):
             return False
         for call in self.tool_calls:
@@ -277,7 +280,7 @@ def _mcp_from_payload(payload: dict[str, Any]) -> tuple[str, str | None, dict[st
 def _mcp_args_block_state(
     args_block: Any,
 ) -> tuple[str, str, dict[str, Any]] | None | Literal["malformed"]:
-    """Malformed when present but not a valid triple; never call with JSON null (use mcp completed helper)."""
+    """Malformed when present but not a valid triple; never pass JSON null here."""
     if args_block is None:
         return "malformed"
     if not isinstance(args_block, dict):
@@ -351,11 +354,7 @@ def _bound_gate_a_mcp_identity(
 ) -> bool:
     from dev.factory.gate_a_mcp.constants import MCP_SERVER_NAME, TOOL_NAME
 
-    return (
-        tool_name == TOOL_NAME
-        and mcp_server == MCP_SERVER_NAME
-        and inner_args == {}
-    )
+    return tool_name == TOOL_NAME and mcp_server == MCP_SERVER_NAME and inner_args == {}
 
 
 def _present_arm(result: dict[str, Any], key: str) -> bool:
@@ -385,10 +384,7 @@ def _dict_has_execution_evidence(result: dict[str, Any]) -> bool:
         return True
     if any(_present_arm(result, key) for key in _EXECUTION_EVIDENCE_KEYS):
         return True
-    for val in result.values():
-        if _value_has_execution_evidence(val):
-            return True
-    return False
+    return any(_value_has_execution_evidence(val) for val in result.values())
 
 
 def _dict_has_any_key(result: dict[str, Any], keys: frozenset[str]) -> bool:
@@ -572,9 +568,9 @@ def _mcp_result_dict_ambiguous(result: dict[str, Any]) -> bool:
 def _native_result_dict_ambiguous(result: dict[str, Any]) -> bool:
     if _result_has_conflicting_denial_and_execution(result):
         return True
-    if any(_present_arm(result, key) for key in _DENIAL_RESULT_KEYS) and _dict_has_execution_evidence(
-        result
-    ):
+    if any(
+        _present_arm(result, key) for key in _DENIAL_RESULT_KEYS
+    ) and _dict_has_execution_evidence(result):
         return True
     if _present_arm(result, "success") and _dict_has_any_key(result, _POLICY_TEXT_KEYS):
         return True
@@ -851,7 +847,9 @@ def _native_2026_completed_result_is_ambiguous(result: Any) -> bool:
     return True
 
 
-def _native_args_from_variant(variant: dict[str, Any], kind: str) -> dict[str, Any] | None | Literal["malformed"]:
+def _native_args_from_variant(
+    variant: dict[str, Any], kind: str
+) -> dict[str, Any] | None | Literal["malformed"]:
     if kind == "shell":
         key = "shellToolCall"
     elif kind == "read":
@@ -887,14 +885,12 @@ def _native_stream_args_agree(
     if kind == "read":
         return started_args.get("path") == completed_args.get("path")
     if kind == "glob":
-        return (
-            started_args.get("globPattern") == completed_args.get("globPattern")
-            and started_args.get("targetDirectory") == completed_args.get("targetDirectory")
-        )
-    return (
-        started_args.get("path") == completed_args.get("path")
-        and started_args.get("streamContent") == completed_args.get("streamContent")
-    )
+        return started_args.get("globPattern") == completed_args.get(
+            "globPattern"
+        ) and started_args.get("targetDirectory") == completed_args.get("targetDirectory")
+    return started_args.get("path") == completed_args.get("path") and started_args.get(
+        "streamContent"
+    ) == completed_args.get("streamContent")
 
 
 def _clean_positive_mcp_payload(
@@ -989,10 +985,7 @@ def _non_tool_call_dict_carries_tool_evidence(node: dict[str, Any]) -> bool:
             return True
     if _dict_has_any_key(node, _EXECUTION_EVIDENCE_KEYS):
         return True
-    for val in node.values():
-        if _non_tool_call_value_carries_tool_evidence(val):
-            return True
-    return False
+    return any(_non_tool_call_value_carries_tool_evidence(val) for val in node.values())
 
 
 def _non_tool_call_value_carries_tool_evidence(val: Any) -> bool:
@@ -1199,8 +1192,10 @@ def _stream_2026_tool_call_event_metadata_allowed(key: str, val: Any) -> bool:
             return True
         return isinstance(val, str) and val.isdigit()
     if key in ("call_id", "model_call_id", "session_id"):
-        return isinstance(val, str) and bool(val) and not _string_has_structural_execution_evidence(
-            val
+        return (
+            isinstance(val, str)
+            and bool(val)
+            and not _string_has_structural_execution_evidence(val)
         )
     return True
 
@@ -1458,10 +1453,7 @@ def _merge_stream_tool_call(
 
     if subtype == "completed":
         started_kind_peek = pending_kinds.get(call_id)
-        if (
-            started_kind_peek is not None
-            and started_kind_peek != completed_kind
-        ):
+        if started_kind_peek is not None and started_kind_peek != completed_kind:
             pending.pop(call_id, None)
             pending_kinds.pop(call_id, None)
             unparsed_variants.append(
@@ -1982,7 +1974,7 @@ def _call_id_matched_2026_pair(summary: StreamJsonSummary, call_id: str | None) 
 
 
 def _gate_a_release_certification_ready(summary: StreamJsonSummary) -> bool:
-    """Release certificate predicates accept only unparsed-free 2026 stream-json (no legacy rows)."""
+    """Release predicates accept only unparsed-free 2026 stream-json (no legacy rows)."""
     if summary.unparsed_tool_call_variants:
         return False
     if summary.legacy_tool_call_events:
@@ -2005,11 +1997,7 @@ def _bound_gate_a_mcp_stream_certifies(summary: StreamJsonSummary) -> ToolCallOb
     bound = _bound_gate_a_mcp_observations(summary)
     if not bound:
         return None
-    matched_bound = [
-        call
-        for call in bound
-        if _call_id_matched_2026_pair(summary, call.call_id)
-    ]
+    matched_bound = [call for call in bound if _call_id_matched_2026_pair(summary, call.call_id)]
     if len(matched_bound) != len(bound):
         return None
     if any(call.status == "running" for call in bound):
@@ -2026,8 +2014,7 @@ def _matched_2026_native_read_calls(summary: StreamJsonSummary) -> list[ToolCall
     return [
         call
         for call in summary.tool_calls
-        if call.name.casefold() == "read"
-        and _call_id_matched_2026_pair(summary, call.call_id)
+        if call.name.casefold() == "read" and _call_id_matched_2026_pair(summary, call.call_id)
     ]
 
 
@@ -2111,9 +2098,9 @@ def negative_attempt_satisfied(attempt_id: str, summary: StreamJsonSummary) -> b
     if attempt_id == "deny_web_fetch_marker":
         if not _gate_a_release_certification_ready(summary):
             return False
-        return summary.attempted_tool_named("WebFetch") is not None and summary.permission_denied_for_tool(
+        return summary.attempted_tool_named(
             "WebFetch"
-        )
+        ) is not None and summary.permission_denied_for_tool("WebFetch")
     if attempt_id == "deny_shell_without_mcp":
         return _negative_native_tool_certified(summary, "Shell")
     if attempt_id == "deny_write_without_mcp":

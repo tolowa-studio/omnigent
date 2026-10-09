@@ -181,7 +181,9 @@ def _find_extra_mcp_approvals(home_dir: Path, *, allowed_relpath: str) -> list[s
     problems: list[str] = []
     for path in sorted(cursor_home.rglob(MCP_APPROVALS_BASENAME)):
         if path.is_symlink():
-            problems.append(f"forbidden symlink mcp-approvals path: {path.relative_to(home_dir).as_posix()}")
+            problems.append(
+                f"forbidden symlink mcp-approvals path: {path.relative_to(home_dir).as_posix()}"
+            )
             continue
         if not path.is_file():
             continue
@@ -199,9 +201,8 @@ def _reject_symlink_project_tree(project_dir: Path) -> list[str]:
     problems: list[str] = []
     for path in project_dir.rglob("*"):
         if path.is_symlink():
-            problems.append(
-                f"symlink under cursor project directory: {path.relative_to(project_dir.parent.parent).as_posix()}",
-            )
+            rel = path.relative_to(project_dir.parent.parent).as_posix()
+            problems.append(f"symlink under cursor project directory: {rel}")
     return problems
 
 

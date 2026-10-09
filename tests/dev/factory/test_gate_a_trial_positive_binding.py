@@ -9,11 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from dev.factory.gate_a_mcp.checkout import canonical_evidence_root, list_evidence_archive_dir_names
-from dev.factory.gate_a_mcp.preflight import preflight_ready_marker_path
+from dev.factory.gate_a_mcp.checkout import (
+    canonical_evidence_root,
+    list_evidence_archive_dir_names,
+)
 from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME
+from dev.factory.gate_a_mcp.preflight import preflight_ready_marker_path
 from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
-from dev.factory.gate_a_trial.positive_binding import sha256_hex_of_file, verify_positive_mcp_receipt
+from dev.factory.gate_a_trial.positive_binding import (
+    sha256_hex_of_file,
+    verify_positive_mcp_receipt,
+)
 from dev.factory.gate_a_trial.prestarted_mcp import PrestartedGateAMcp
 from dev.factory.gate_a_trial.secret_redact import redact_secrets
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_ORDER_ID
@@ -73,7 +79,9 @@ def _base_payload(artifact: Path, digest: str) -> dict:
     }
 
 
-def test_verify_positive_receipt_sha_and_new_evidence_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_positive_receipt_sha_and_new_evidence_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     root = canonical_evidence_root()
     before = list_evidence_archive_dir_names()
@@ -93,7 +101,9 @@ def test_verify_positive_receipt_sha_and_new_evidence_dir(tmp_path: Path, monkey
     assert ok, problems
 
 
-def test_verify_positive_receipt_rejects_sha_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_verify_positive_receipt_rejects_sha_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     root = canonical_evidence_root()
     before = list_evidence_archive_dir_names()
@@ -346,7 +356,7 @@ def test_verify_positive_receipt_preflight_marker_must_match_witness(
 
 def test_redact_gate_a_capability_bearer() -> None:
     token = "capability-token-value-12345678"
-    text = f'Authorization: Bearer {token}'
+    text = f"Authorization: Bearer {token}"
     redacted = redact_secrets(text, env={"GATE_A_MCP_HTTP_CAPABILITY": token})
     assert token not in redacted
     assert "Bearer <redacted:gate-a-capability>" in redacted

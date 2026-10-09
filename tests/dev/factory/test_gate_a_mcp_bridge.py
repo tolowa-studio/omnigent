@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from dev.factory.gate_a_mcp.checkout import create_disposable_worktree
 from dev.factory.gate_a_mcp.bridge import (
     GateAMcpArgumentError,
     GateAMcpBridgeConfig,
@@ -20,6 +19,7 @@ from dev.factory.gate_a_mcp.bridge import (
     run_bound_internal_stage_order,
     validate_tool_arguments,
 )
+from dev.factory.gate_a_mcp.checkout import create_disposable_worktree
 from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME, MCP_SERVER_NAME, TOOL_NAME
 from dev.factory.gate_a_mcp.stdio_launch import gate_a_stdio_mcp_launch
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_ORDER_ID, STAGE_WORKER_ENV

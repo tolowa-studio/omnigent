@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_ORDER_ID
 from dev.factory.seatbelt_fixture.manifest import (
@@ -24,6 +23,7 @@ PREFLIGHT_TTL_SECONDS = 600.0
 
 class GateAPreflightError(RuntimeError):
     """Seatbelt preflight or single-use receipt admission failed closed."""
+
 
 FixtureRunner = Callable[..., FixtureReceipt]
 

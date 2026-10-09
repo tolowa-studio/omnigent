@@ -343,7 +343,11 @@ def run_seatbelt_fixture(
     settle_seconds: float | None = None,
     order_id: str = "factory-seatbelt-fixture-order",
 ) -> FixtureReceipt:
-    settle = float(settle_seconds if settle_seconds is not None else os.environ.get("FIXTURE_SETTLE_SECONDS", "90"))
+    settle = float(
+        settle_seconds
+        if settle_seconds is not None
+        else os.environ.get("FIXTURE_SETTLE_SECONDS", "90")
+    )
     started_at = _utc_now()
     probes: list[ProbeRecord] = []
     failure_reason: str | None = None
@@ -423,21 +427,24 @@ def run_seatbelt_fixture(
             files_after = _list_checkout_files(checkout_dir)
             new_files = files_after - baseline_files
             only_allowed = new_files == {"allowed.txt"}
-            ok = (
-                positive_run.returncode == 0
-                and bool(positive_payload.get("ok"))
-                and only_allowed
-            )
+            ok = positive_run.returncode == 0 and bool(positive_payload.get("ok")) and only_allowed
             detail = (
                 f"rc={positive_run.returncode} new_files={sorted(new_files)}"
                 if ok
-                else f"rc={positive_run.returncode} payload={positive_payload!r} new={sorted(new_files)}"
+                else (
+                    f"rc={positive_run.returncode} payload={positive_payload!r} "
+                    f"new={sorted(new_files)}"
+                )
             )
             probes.append(ProbeRecord("positive", ok, detail))
 
-        if _output_contains_secrets(positive_run.stdout) or _output_contains_secrets(positive_run.stderr):
+        if _output_contains_secrets(positive_run.stdout) or _output_contains_secrets(
+            positive_run.stderr
+        ):
             probes.append(
-                ProbeRecord("positive_output_hygiene", False, "fixture secret leaked to child output")
+                ProbeRecord(
+                    "positive_output_hygiene", False, "fixture secret leaked to child output"
+                )
             )
 
         # Negative probes

@@ -219,7 +219,8 @@ def wait_for_qualified_witness(
             )
             if not _loopback_port_accepting(witness.listen_host, witness.listen_port):
                 raise LoopbackTransportNotReady(
-                    f"loopback port {witness.listen_host}:{witness.listen_port} not accepting connections",
+                    f"loopback port {witness.listen_host}:{witness.listen_port} "
+                    "not accepting connections",
                 )
             if capability_token is not None:
                 probe_authenticated_loopback_mcp_transport(
@@ -261,11 +262,17 @@ def _is_fail_closed_witness_error(exc: ProcessWitnessError) -> bool:
 
 def mcp_streamable_http_url(witness: QualifiedProcessWitness) -> str:
     host = witness.listen_host
-    path = witness.mcp_url_path if witness.mcp_url_path.startswith("/") else f"/{witness.mcp_url_path}"
+    path = (
+        witness.mcp_url_path
+        if witness.mcp_url_path.startswith("/")
+        else f"/{witness.mcp_url_path}"
+    )
     return f"http://{host}:{witness.listen_port}{path}"
 
 
-def loopback_allowed_hosts_for_port(listen_port: int, *, listen_host: str = _LOOPBACK_BIND_HOST) -> list[str]:
+def loopback_allowed_hosts_for_port(
+    listen_port: int, *, listen_host: str = _LOOPBACK_BIND_HOST
+) -> list[str]:
     """Exact Host header values permitted for streamable HTTP (DNS rebinding protection)."""
     if listen_host not in (_LOOPBACK_BIND_HOST, "localhost"):
         raise ValueError("gate A prestarted MCP must bind loopback 127.0.0.1")
@@ -329,7 +336,9 @@ def _http_get_status(url: str, headers: dict[str, str], *, timeout_seconds: floa
         return int(exc.code)
     except urllib.error.URLError as exc:
         if _connection_refused(exc):
-            raise LoopbackTransportNotReady("loopback MCP transport not accepting connections") from None
+            raise LoopbackTransportNotReady(
+                "loopback MCP transport not accepting connections"
+            ) from None
         raise ProcessWitnessError(
             f"loopback MCP transport unreachable ({type(exc.reason).__name__})",
         ) from None
@@ -356,7 +365,8 @@ def probe_authenticated_loopback_mcp_transport(
     retry_interval_seconds: float = 0.1,
 ) -> None:
     """
-    Reject false-ready witnesses: loopback HTTP must accept auth and complete MCP initialize/list-tools.
+    Reject false-ready witnesses: loopback HTTP must accept auth and complete
+    MCP initialize/list-tools.
     """
     headers = _authorized_headers(capability_token)
     deadline = time.monotonic() + startup_retry_seconds
@@ -366,7 +376,8 @@ def probe_authenticated_loopback_mcp_transport(
             validate_live_witness(witness)
             if not _loopback_port_accepting(witness.listen_host, witness.listen_port):
                 last_not_ready = (
-                    f"loopback port {witness.listen_host}:{witness.listen_port} not accepting connections"
+                    f"loopback port {witness.listen_host}:{witness.listen_port} "
+                    "not accepting connections"
                 )
                 if time.monotonic() >= deadline:
                     raise LoopbackTransportNotReady(last_not_ready)
@@ -381,7 +392,8 @@ def probe_authenticated_loopback_mcp_transport(
                     else "loopback MCP endpoint"
                 )
                 raise ProcessWitnessError(
-                    f"loopback MCP transport rejected Host header (http_status=421 endpoint={endpoint})",
+                    "loopback MCP transport rejected Host header "
+                    f"(http_status=421 endpoint={endpoint})",
                 )
             if status == 401:
                 raise ProcessWitnessError("loopback MCP transport unauthorized (http_status=401)")
@@ -396,7 +408,7 @@ def probe_authenticated_loopback_mcp_transport(
             time.sleep(retry_interval_seconds)
         except ProcessWitnessError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — retry until deadline on transport startup races
             endpoint = (
                 f"http://{_LOOPBACK_BIND_HOST}:{witness.listen_port}{witness.mcp_url_path}"
                 if witness
@@ -407,7 +419,8 @@ def probe_authenticated_loopback_mcp_transport(
                 time.sleep(retry_interval_seconds)
                 continue
             raise ProcessWitnessError(
-                f"loopback MCP initialize/list-tools failed (endpoint={endpoint} detail={type(exc).__name__})",
+                "loopback MCP initialize/list-tools failed "
+                f"(endpoint={endpoint} detail={type(exc).__name__})",
             ) from None
 
 

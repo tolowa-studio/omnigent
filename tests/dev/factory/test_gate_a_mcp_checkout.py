@@ -75,9 +75,7 @@ def test_archive_artifact_evidence_copies_regular_file(tmp_path: Path) -> None:
         assert archived.read_text(encoding="utf-8") == "bound-content\n"
         assert archived.is_file()
         assert not archived.is_symlink()
-        under, _, _ = artifact_path_under_canonical_evidence_root(
-            archived, parent=evidence_parent
-        )
+        under, _, _ = artifact_path_under_canonical_evidence_root(archived, parent=evidence_parent)
         assert under
     finally:
         dispose_worktree(checkout)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import platform
-import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -584,7 +583,9 @@ def test_compare_post_positive_rejects_new_top_level_key_after_positive(tmp_path
         workspace_mcp_config=workspace / ".cursor" / "mcp.json",
         home_dir=home,
     )
-    assert any("top-level key set changed" in p or "unexpected top-level keys" in p for p in problems)
+    assert any(
+        "top-level key set changed" in p or "unexpected top-level keys" in p for p in problems
+    )
 
 
 def _write_project_mcp_approvals(project_dir: Path, digest: str) -> None:
@@ -600,7 +601,6 @@ def test_v11_warmup_pins_and_positive_accepts_repo_json(tmp_path: Path) -> None:
         REPO_JSON_BASENAME,
         establish_project_files_baseline_after_warmup,
         expected_cursor_project_slug,
-        validate_project_files_after_positive,
     )
 
     workspace = tmp_path / "trial-ws"
@@ -644,11 +644,15 @@ def test_v11_warmup_pins_and_positive_accepts_repo_json(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "mutator",
     [
-        lambda home, ws, slug: (home / ".cursor" / "projects" / slug / "mcp-approvals.json").write_text(
+        lambda home, ws, slug: (
+            home / ".cursor" / "projects" / slug / "mcp-approvals.json"
+        ).write_text(
             json.dumps(["C" * 44]) + "\n",
             encoding="utf-8",
         ),
-        lambda home, ws, slug: (home / ".cursor" / "projects" / slug / "mcp-approvals.json").unlink(),
+        lambda home, ws, slug: (
+            home / ".cursor" / "projects" / slug / "mcp-approvals.json"
+        ).unlink(),
         lambda home, ws, slug: _write_project_mcp_approvals(
             home / ".cursor" / "projects" / f"{slug}-extra",
             "D" * 44,

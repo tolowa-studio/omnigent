@@ -9,29 +9,27 @@ import time
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-from dev.factory.gate_a_trial.stream_json import StreamJsonSummary, ToolCallObservation
-
-import pytest
+from unittest.mock import patch
 
 from dev.factory.gate_a_mcp.checkout import canonical_evidence_root
 from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME, MCP_SERVER_NAME, TOOL_NAME
 from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
-from dev.factory.gate_a_trial.positive_binding import sha256_hex_of_file
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
-
-from dev.factory.gate_a_trial.config_hashes import MANDATORY_EFFECTIVE_CONFIG_KEYS
+from dev.factory.gate_a_trial.config_hashes import (
+    MANDATORY_EFFECTIVE_CONFIG_KEYS,
+    compare_config_inventory,
+)
 from dev.factory.gate_a_trial.orchestration import (
     GateAOrchestrationError,
     GateATurnCertification,
     ProfileBundle,
     assert_config_stable,
+    certify_positive_turn,
     run_admitted_gate_a_turn,
 )
+from dev.factory.gate_a_trial.positive_binding import sha256_hex_of_file
+from dev.factory.gate_a_trial.stream_json import StreamJsonSummary, ToolCallObservation
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_BRIEF_HASH, INTERNAL_STAGE_ORDER_ID
-from dev.factory.gate_a_trial.config_hashes import compare_config_inventory
-from dev.factory.gate_a_trial.orchestration import certify_positive_turn
+from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 
 
 def test_assert_config_stable_detects_drift() -> None:
@@ -231,7 +229,9 @@ def test_run_admitted_gate_a_turn_positive_synthetic_path_uses_adapter_witness(
     config_dir = tmp_path / "cfg"
     config_dir.mkdir()
     fake = _FakePrestarted()
-    cert = GateATurnCertification(ok=True, problems=[], allowed_txt_evidence=str(tmp_path / "allowed.txt"))
+    cert = GateATurnCertification(
+        ok=True, problems=[], allowed_txt_evidence=str(tmp_path / "allowed.txt")
+    )
     (tmp_path / "allowed.txt").write_text("x", encoding="utf-8")
 
     home = tmp_path / "home"
@@ -267,7 +267,10 @@ def test_run_admitted_gate_a_turn_positive_synthetic_path_uses_adapter_witness(
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -314,8 +317,9 @@ def test_run_admitted_gate_a_turn_positive_synthetic_path_uses_adapter_witness(
             "omnigent.factory.gate_a.admission.validate_witness_order_binding",
         ),
     ):
-        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
         import time
+
+        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
         load_witness.return_value = QualifiedProcessWitness(
             witness_nonce=fake.witness_nonce,
@@ -366,7 +370,9 @@ def test_run_admitted_gate_a_turn_rejects_cli_time_config_mutation(tmp_path: Pat
     mandatory = {key: f"hash-{key}" for key in MANDATORY_EFFECTIVE_CONFIG_KEYS}
     stale_post_discovery = dict(mandatory)
 
-    def _mutate_cli_config(_cursor_executable: str, prompt: str, **_kwargs: object) -> dict[str, object]:
+    def _mutate_cli_config(
+        _cursor_executable: str, prompt: str, **_kwargs: object
+    ) -> dict[str, object]:
         if "OK" in prompt:
             return _ok_headless_stream()
         path = config_dir / "cli-config.json"
@@ -391,7 +397,10 @@ def test_run_admitted_gate_a_turn_rejects_cli_time_config_mutation(tmp_path: Pat
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -422,8 +431,9 @@ def test_run_admitted_gate_a_turn_rejects_cli_time_config_mutation(tmp_path: Pat
             "omnigent.factory.gate_a.admission.validate_witness_order_binding",
         ),
     ):
-        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
         import time
+
+        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
         load_witness.return_value = QualifiedProcessWitness(
             witness_nonce=fake.witness_nonce,
@@ -471,7 +481,10 @@ def test_run_admitted_gate_a_turn_witness_mismatch_rejected_at_binding(tmp_path:
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -504,8 +517,9 @@ def test_run_admitted_gate_a_turn_witness_mismatch_rejected_at_binding(tmp_path:
             return_value=[],
         ),
     ):
-        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
         import time
+
+        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
         load_witness.return_value = QualifiedProcessWitness(
             witness_nonce="forged-not-from-handle",
@@ -542,6 +556,7 @@ def test_run_admitted_gate_a_turn_rejects_post_cli_approval_mutation(tmp_path: P
     )
     fake = _FakePrestarted()
     mandatory = {key: f"hash-{key}" for key in MANDATORY_EFFECTIVE_CONFIG_KEYS}
+
     def _noop_cli(_cursor_executable: str, prompt: str, **_kwargs: object) -> dict[str, object]:
         if "OK" in prompt:
             return _ok_headless_stream()
@@ -565,7 +580,10 @@ def test_run_admitted_gate_a_turn_rejects_post_cli_approval_mutation(tmp_path: P
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -581,7 +599,10 @@ def test_run_admitted_gate_a_turn_rejects_post_cli_approval_mutation(tmp_path: P
         patch(
             "dev.factory.gate_a_trial.orchestration.load_qualified_witness",
         ) as load_witness,
-        patch("dev.factory.gate_a_trial.orchestration.run_headless_stream_json", side_effect=_noop_cli),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.run_headless_stream_json",
+            side_effect=_noop_cli,
+        ),
         patch(
             "dev.factory.gate_a_trial.orchestration.prepare_gate_a_cursor_cli_sandbox",
             return_value=_fake_gate_a_sandbox(home),
@@ -593,8 +614,9 @@ def test_run_admitted_gate_a_turn_rejects_post_cli_approval_mutation(tmp_path: P
             "omnigent.factory.gate_a.admission.validate_witness_order_binding",
         ),
     ):
-        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
         import time
+
+        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
         load_witness.return_value = QualifiedProcessWitness(
             witness_nonce=fake.witness_nonce,
@@ -623,7 +645,9 @@ def test_run_admitted_gate_a_turn_cleanup_failure_prevents_success(tmp_path: Pat
     config_dir = tmp_path / "cfg"
     config_dir.mkdir()
     fake = _FakePrestarted()
-    cert = GateATurnCertification(ok=True, problems=[], allowed_txt_evidence=str(tmp_path / "allowed.txt"))
+    cert = GateATurnCertification(
+        ok=True, problems=[], allowed_txt_evidence=str(tmp_path / "allowed.txt")
+    )
     (tmp_path / "allowed.txt").write_text("x", encoding="utf-8")
     home = tmp_path / "home"
     home.mkdir()
@@ -650,7 +674,10 @@ def test_run_admitted_gate_a_turn_cleanup_failure_prevents_success(tmp_path: Pat
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -697,8 +724,9 @@ def test_run_admitted_gate_a_turn_cleanup_failure_prevents_success(tmp_path: Pat
             "omnigent.factory.gate_a.admission.validate_witness_order_binding",
         ),
     ):
-        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
         import time
+
+        from dev.factory.gate_a_mcp.process_witness import QualifiedProcessWitness
 
         load_witness.return_value = QualifiedProcessWitness(
             witness_nonce=fake.witness_nonce,
@@ -750,7 +778,10 @@ def test_run_admitted_gate_a_turn_cleans_up_prestarted_on_error(tmp_path: Path) 
             "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
             return_value=home,
         ),
-        patch("dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty", return_value={"cursor_state_absent": True}),
+        patch(
+            "dev.factory.gate_a_trial.orchestration.prove_isolated_home_empty",
+            return_value={"cursor_state_absent": True},
+        ),
         patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake),
         patch(
             "dev.factory.gate_a_trial.orchestration.materialize_order_profile",
@@ -776,7 +807,11 @@ def _certify_stream_ok() -> dict[str, object]:
 
 
 def _certify_summary_mock(*, mcp_result: object | None = None) -> StreamJsonSummary:
-    result = mcp_result if mcp_result is not None else {"artifact_path": "/should-be-redacted/allowed.txt"}
+    result = (
+        mcp_result
+        if mcp_result is not None
+        else {"artifact_path": "/should-be-redacted/allowed.txt"}
+    )
     return StreamJsonSummary(
         tool_calls=[
             ToolCallObservation(
@@ -1058,7 +1093,9 @@ def test_run_admitted_gate_a_turn_success_has_no_dangling_evidence_path(
     expected_digest = ""
     disposed_turn_root: Path | None = None
 
-    def _positive_cli_after_evidence_snapshot(*_args: object, **_kwargs: object) -> dict[str, object]:
+    def _positive_cli_after_evidence_snapshot(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, object]:
         nonlocal expected_digest
         archive_dir.mkdir(parents=True, exist_ok=True)
         artifact.write_text("allowed\n", encoding="utf-8")
@@ -1087,7 +1124,9 @@ def test_run_admitted_gate_a_turn_success_has_no_dangling_evidence_path(
         )
         return _certify_stream_ok()
 
-    def _headless_warmup_then_positive(_cursor_executable: str, prompt: str, **_kwargs: object) -> dict[str, object]:
+    def _headless_warmup_then_positive(
+        _cursor_executable: str, prompt: str, **_kwargs: object
+    ) -> dict[str, object]:
         if "Do not use any tools" in prompt:
             return _ok_headless_stream()
         return _positive_cli_after_evidence_snapshot()
@@ -1128,16 +1167,26 @@ def test_run_admitted_gate_a_turn_success_has_no_dangling_evidence_path(
             ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_trial_workspace", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_trial_workspace", return_value=None
+            ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_trial_config_dir", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_trial_config_dir",
+                return_value=None,
+            ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.dispose_isolated_home", return_value=None),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.dispose_isolated_home", return_value=None
+            ),
         )
         stack.enter_context(
-            patch("dev.factory.gate_a_trial.orchestration.materialize_isolated_home", return_value=home),
+            patch(
+                "dev.factory.gate_a_trial.orchestration.materialize_isolated_home",
+                return_value=home,
+            ),
         )
         stack.enter_context(
             patch(
@@ -1145,7 +1194,9 @@ def test_run_admitted_gate_a_turn_success_has_no_dangling_evidence_path(
                 return_value={"cursor_state_absent": True},
             ),
         )
-        stack.enter_context(patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake))
+        stack.enter_context(
+            patch("dev.factory.gate_a_trial.orchestration.start_bound_mcp", return_value=fake)
+        )
         stack.enter_context(
             patch(
                 "dev.factory.gate_a_trial.orchestration.materialize_order_profile",

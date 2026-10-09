@@ -11,8 +11,6 @@ import pytest
 
 from dev.factory.gate_a_mcp.checkout import canonical_evidence_root
 from dev.factory.gate_a_mcp.constants import MCP_SERVER_NAME, TOOL_NAME
-from dev.factory.order_scoped.binding import INTERNAL_STAGE_BRIEF_HASH, INTERNAL_STAGE_ORDER_ID
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 from dev.factory.gate_a_trial.stream_json import (
     GateAPositiveMcpPayloadMode,
     headless_stream_init_acceptable,
@@ -20,6 +18,8 @@ from dev.factory.gate_a_trial.stream_json import (
     parse_stream_json,
     positive_gate_a_tool_satisfied,
 )
+from dev.factory.order_scoped.binding import INTERNAL_STAGE_BRIEF_HASH, INTERNAL_STAGE_ORDER_ID
+from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS
 
 
 def _line(event: dict) -> str:
@@ -102,7 +102,9 @@ def test_negative_shell_requires_attempt_and_permission_denial() -> None:
 
 
 def test_negative_shell_refusal_without_tool_call_not_satisfied() -> None:
-    stdout = _line({"type": "assistant", "message": {"content": [{"type": "text", "text": "I cannot"}]}})
+    stdout = _line(
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "I cannot"}]}}
+    )
     summary = parse_stream_json(stdout)
     assert not negative_attempt_satisfied("deny_shell_marker", summary)
 
@@ -760,7 +762,10 @@ def test_adversarial_mcp_started_shell_completed_same_call_id() -> None:
         ]
     )
     summary = parse_stream_json(stdout)
-    assert any(v.get("started_kind") == "mcp" and v.get("completed_kind") == "shell" for v in summary.unparsed_tool_call_variants)
+    assert any(
+        v.get("started_kind") == "mcp" and v.get("completed_kind") == "shell"
+        for v in summary.unparsed_tool_call_variants
+    )
     assert not summary.native_shell_write_calls_denied()
     assert positive_gate_a_tool_satisfied(summary, TOOL_NAME) is None
 
@@ -859,9 +864,7 @@ def test_adversarial_mcp_success_plus_failure_is_not_positive() -> None:
                     },
                     "result": {
                         "failure": {"message": "spawn failed"},
-                        "success": {
-                            "content": [{"type": "text", "text": json.dumps(payload)}]
-                        },
+                        "success": {"content": [{"type": "text", "text": json.dumps(payload)}]},
                     },
                 }
             },
@@ -929,11 +932,7 @@ def test_adversarial_progress_list_tool_call_is_unparsed() -> None:
             "type": "tool_call",
             "subtype": "progress",
             "tool_call": [
-                {
-                    "shellToolCall": {
-                        "result": {"success": {"exitCode": 0, "stdout": "ran"}}
-                    }
-                }
+                {"shellToolCall": {"result": {"success": {"exitCode": 0, "stdout": "ran"}}}}
             ],
         }
     )
@@ -1026,9 +1025,7 @@ def test_adversarial_mcp_error_arm_beside_success_is_not_positive() -> None:
                 "mcpToolCall": {
                     "result": {
                         "error": {"errorMessage": "spawn failed"},
-                        "success": {
-                            "content": [{"type": "text", "text": json.dumps(payload)}]
-                        },
+                        "success": {"content": [{"type": "text", "text": json.dumps(payload)}]},
                     }
                 }
             },
@@ -1272,8 +1269,6 @@ def test_adversarial_mcp_second_content_block_is_not_positive() -> None:
     )
     summary = parse_stream_json(stdout)
     assert positive_gate_a_tool_satisfied(summary, TOOL_NAME) is None
-
-
 
 
 def _normalize_mcp_tool_result_for_tests(result: dict) -> dict:
@@ -1611,9 +1606,7 @@ def test_v8_grok_clean_native_denial_still_recognized() -> None:
                     "tool_call": {
                         "shellToolCall": {
                             "args": {"command": command},
-                            "result": {
-                                "rejected": {"reason": "Permission denied by allowlist"}
-                            },
+                            "result": {"rejected": {"reason": "Permission denied by allowlist"}},
                         }
                     },
                 }
@@ -2476,7 +2469,9 @@ def test_v16_grok_malformed_completed_mcp_args_with_clean_shell_denial_fails_clo
     _v16_assert_adversarial_conjunction_fails(summary)
 
 
-def test_v16_grok_completed_only_mcp_list_inner_args_with_clean_shell_denial_fails_closed() -> None:
+def test_v16_grok_completed_only_mcp_list_inner_args_with_clean_shell_denial_fails_closed() -> (
+    None
+):
     payload = _allowed_payload()
     stdout = "\n".join(
         [
@@ -2650,7 +2645,8 @@ def test_v16_codex_shell_rejected_reason_embeds_execution_json_fails_closed() ->
                             "result": {
                                 "rejected": {
                                     "reason": (
-                                        'rejected by allowlist {"stdout":"ran","exitCode":0,"ok":true}'
+                                        "rejected by allowlist "
+                                        '{"stdout":"ran","exitCode":0,"ok":true}'
                                     ),
                                 },
                             }
@@ -2748,7 +2744,7 @@ def test_v16_codex_native_shell_completed_explicit_null_args_is_unparsed() -> No
 
 
 def _v17_clean_conjunction_lines() -> list[str]:
-    return [* _v16_clean_mcp_pair_lines(), *_v16_clean_2026_shell_denial_pair()]
+    return [*_v16_clean_mcp_pair_lines(), *_v16_clean_2026_shell_denial_pair()]
 
 
 def _v17_assert_smuggled_line_fails_closed(summary) -> None:
@@ -2871,9 +2867,7 @@ def _v18_grok_embedded_success_stderr_shell_line() -> str:
                 "shellToolCall": {
                     "result": {
                         "rejected": {
-                            "reason": (
-                                'rejected by allowlist {"success":{"stderr":"ran"}}'
-                            ),
+                            "reason": ('rejected by allowlist {"success":{"stderr":"ran"}}'),
                         }
                     }
                 }
@@ -2903,9 +2897,7 @@ def test_v18_grok_shell_policy_message_embedded_success_stderr_fails_closed() ->
                     "tool_call": {
                         "shellToolCall": {
                             "result": {
-                                "message": (
-                                    'rejected by allowlist {"success":{"stderr":"ran"}}'
-                                ),
+                                "message": ('rejected by allowlist {"success":{"stderr":"ran"}}'),
                             }
                         }
                     },
@@ -2928,9 +2920,7 @@ def test_v18_grok_legacy_shell_string_denial_embedded_success_stderr_fails_close
                     "name": "Shell",
                     "status": "error",
                     "args": {"command": "echo safe"},
-                    "result": (
-                        'rejected by allowlist {"success":{"stderr":"ran"}}'
-                    ),
+                    "result": ('rejected by allowlist {"success":{"stderr":"ran"}}'),
                 }
             ),
         ]
@@ -4033,9 +4023,7 @@ def test_v22_grok_shell_event_metadata_execution_fails_negative_conjunction() ->
     _v22_assert_adversarial_negative_conjunction_fails(summary)
 
 
-_V27_REAL_POSITIVE_TRANSCRIPT = (
-    "stream-positive_gate_a_mcp_tool-20261008T061608Z.stdout.jsonl"
-)
+_V27_REAL_POSITIVE_TRANSCRIPT = "stream-positive_gate_a_mcp_tool-20261008T061608Z.stdout.jsonl"
 
 
 def test_v27_real_cli_positive_transcript_without_read_certifies(
@@ -4313,7 +4301,9 @@ def _v30_observed_nonempty_glob_success() -> dict:
     }
 
 
-def _v30_observed_glob_pair_lines(glob_id: str = "tool_9b9935a5-a0ee-4cdf-8e6f-0a7d83c2556") -> list[str]:
+def _v30_observed_glob_pair_lines(
+    glob_id: str = "tool_9b9935a5-a0ee-4cdf-8e6f-0a7d83c2556",
+) -> list[str]:
     ws = "/private/var/folders/ws/omnigent-gate-a-mcp"
     glob_args = {"targetDirectory": ws, "globPattern": "*"}
     success = _v30_observed_nonempty_glob_success()

@@ -14,8 +14,8 @@ from dev.factory.gate_a_mcp.checkout import canonical_harness_temp_root
 from dev.factory.gate_a_mcp.process_witness import (
     ProcessWitnessError,
     dispose_gate_a_mcp_control_dir,
-    mint_capability_token,
     mcp_streamable_http_url,
+    mint_capability_token,
     read_http_capability,
     validate_live_witness,
     wait_for_qualified_witness,

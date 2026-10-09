@@ -13,8 +13,12 @@ from dev.factory.gate_a_mcp.preflight import (
     reset_preflight_session_for_tests,
 )
 from dev.factory.order_scoped.binding import INTERNAL_STAGE_ORDER_ID
-from dev.factory.seatbelt_fixture.manifest import GATE_A_MIN_SETTLE_SECONDS, FixtureReceipt, ProbeRecord
 from dev.factory.order_scoped.receipt_admission import GATE_A_EXACT_PROBE_NAMES
+from dev.factory.seatbelt_fixture.manifest import (
+    GATE_A_MIN_SETTLE_SECONDS,
+    FixtureReceipt,
+    ProbeRecord,
+)
 from tests.dev.factory.gate_admission_test_support import bind_trusted_gate_receipt_for_admission
 
 

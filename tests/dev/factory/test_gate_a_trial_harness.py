@@ -17,10 +17,13 @@ from dev.factory.gate_a_mcp.checkout import (
     snapshot_allowed_txt_from_evidence_root,
 )
 from dev.factory.gate_a_mcp.constants import BOUND_ARTIFACT_FILENAME
-from dev.factory.gate_a_mcp.stdio_launch import gate_a_stdio_mcp_launch, prove_stdio_mcp_child_env_clean
+from dev.factory.gate_a_mcp.stdio_launch import (
+    gate_a_stdio_mcp_launch,
+    prove_stdio_mcp_child_env_clean,
+)
+from dev.factory.gate_a_trial.mcp_discovery import mcp_server_listing_usable
 from dev.factory.gate_a_trial.secret_redact import redact_secrets
 from dev.factory.gate_a_trial.stream_json import headless_stream_init_acceptable, parse_stream_json
-from dev.factory.gate_a_trial.mcp_discovery import mcp_server_listing_usable
 
 
 def test_gate_a_stdio_launch_uses_env_i_and_empty_mcp_json_env(tmp_path: Path) -> None:
@@ -62,7 +65,9 @@ def test_stream_init_requires_env_api_key_source() -> None:
     summary = parse_stream_json(stdout)
     ok, _ = headless_stream_init_acceptable(summary)
     assert ok
-    login_stdout = json.dumps({"type": "system", "subtype": "init", "apiKeySource": "login"}) + "\n"
+    login_stdout = (
+        json.dumps({"type": "system", "subtype": "init", "apiKeySource": "login"}) + "\n"
+    )
     login_summary = parse_stream_json(login_stdout)
     ok_login, reason = headless_stream_init_acceptable(login_summary)
     assert not ok_login
