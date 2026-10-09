@@ -4037,6 +4037,7 @@ def _fake_sessions_chat_cls(
     query_impl: Callable[[str], object],
     *,
     extra_turns: list[str] | None = None,
+    terminal_status: str = "idle",
 ) -> type:
     """
     Build a ``SessionsChat`` replacement whose ``query`` is ``query_impl``.
@@ -4053,9 +4054,12 @@ def _fake_sessions_chat_cls(
         successive ``await_turn()`` calls, simulating async orchestrator
         auto-wakes. When exhausted ``await_turn`` returns empty text and
         ``last_turn_saw_waiting`` returns ``False``.
+    :param terminal_status: Session status once the first turn finishes
+        and no extra turns remain, e.g. ``"idle"`` or ``"failed"``.
     :returns: A class usable as a drop-in for ``SessionsChat``.
     """
     _extra = list(extra_turns or [])
+    _terminal_status = terminal_status
 
     class _FakeSessionsChat:
         def __init__(self, **_kwargs: object) -> None:
@@ -4066,7 +4070,7 @@ def _fake_sessions_chat_cls(
             # Mirrors the real snapshot: "running" while sub-agents are pending
             # (the runner emits "waiting" → relay collapses to "running"),
             # "idle" when done.
-            return "running" if self._pending else "idle"
+            return "running" if self._pending else _terminal_status
 
         async def refresh(self) -> None:
             pass  # status is derived from _pending; no fetch needed.
@@ -4218,6 +4222,51 @@ async def test_query_sessions_once_returns_text_without_reconcile_on_success(
     result = await _run_one_shot(client, _return_text, monkeypatch)
     assert result == "direct answer"
     assert client.sessions.list_items_calls == 0  # no reconcile on success
+
+
+async def _return_receipt_summary(_prompt: str) -> QueryResult:
+    """Simulate streamed assistant text before a persisted terminal error."""
+    return QueryResult(
+        text="receipt_ok: False\nproblem_count: 1\n",
+        files=[],
+    )
+
+
+async def test_query_sessions_once_raises_on_persisted_error_after_streamed_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Assistant text plus a terminal ``error`` item must not exit as success.
+
+    Headless ``-p`` observed ``receipt_ok: False`` on stdout but exit code
+    0 because ``_query_sessions_once`` returned as soon as live text was
+    collected. The persisted error for this turn must surface and exit
+    non-zero; prior-turn errors must not leak in.
+    """
+    client = _FakeAPClient(
+        [
+            _item_assistant("OLD prior-turn answer"),
+            _item_user("prior"),
+            _item_user("say hi"),
+            _item_assistant("receipt_ok: False\nproblem_count: 1\n"),
+            _item_error("Gate A real-task run finished with receipt_ok=False"),
+        ]
+    )
+    monkeypatch.setattr(
+        "omnigent_client.SessionsChat",
+        _fake_sessions_chat_cls(_return_receipt_summary, terminal_status="failed"),
+    )
+    with pytest.raises(ClientOmnigentError, match="receipt_ok=False") as excinfo:
+        await _query_sessions_once(
+            client=client,
+            agent_name="hello_world",
+            tool_handler=None,
+            prompt="say hi",
+            session_bundle=b"bundle-bytes",
+            session_bundle_filename="agent.tar.gz",
+            runner_id="runner_test",
+        )
+    assert getattr(excinfo.value, "emitted_text", "").startswith("receipt_ok: False")
+    assert client.sessions.list_items_calls == 1
 
 
 async def test_query_sessions_once_multi_turn_async_orchestrator(
