@@ -744,6 +744,21 @@ _BUILTIN_CAPABILITIES: dict[str, HarnessCapabilities] = {
         streaming=True,
         instruction_delivery=_ID.COMPOSED_PER_TURN,
     ),
+    # Opt-in factory operator-command harness (ExecutorAdapter); ignores model
+    # tools/system_prompt and drives Gate A real-task runners via pinned specs.
+    "factory-gate-a-real": _C(
+        _IM.SDK_IN_PROCESS,
+        _EL.NONE,
+        _RS.COLD_ONLY,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.SESSION_SCOPED_CONFIG,
+        subagents=False,
+        interrupt=False,
+        streaming=True,
+        live_queue=False,
+        instruction_delivery=_ID.NOT_DELIVERED,
+    ),
 }
 
 # Builtin ACP CLI harnesses (omnigent/acp_cli_harnesses.py) run through the
@@ -766,6 +781,7 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
             "copilot",
             "cursor",
             "cursor-native",
+            "factory-gate-a-real",
             "devin-native",
             "goose",
             "goose-native",

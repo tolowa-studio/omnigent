@@ -456,6 +456,7 @@ class SeatbeltSandboxBackend(SandboxBackend):
         cwd: Path,
         chdir: Path | None = None,
         target: str | None = None,
+        launcher_read_literals: Sequence[str] | None = None,
     ) -> list[str]:
         """
         Build the ``sandbox-exec`` argv that wraps *argv* under an
@@ -547,6 +548,17 @@ class SeatbeltSandboxBackend(SandboxBackend):
         extra_read_literals: list[Path] = (
             _symlink_hop_literals(Path(argv[0]), covered_prefixes) if argv else []
         )
+        if launcher_read_literals:
+            for literal in launcher_read_literals:
+                literal_path = Path(literal)
+                hop_literals = _symlink_hop_literals(literal_path, covered_prefixes)
+                extra_read_literals.extend(p for p in hop_literals if p not in extra_read_literals)
+                resolved_literal = literal_path.resolve(strict=False)
+                if not any(
+                    _is_within_literal(resolved_literal, root) for root in covered_prefixes
+                ):
+                    if resolved_literal not in extra_read_literals:
+                        extra_read_literals.append(resolved_literal)
         if target is not None:
             target_subpaths, target_literals = _target_visibility_grants(
                 target, covered_prefixes, extra_read_paths

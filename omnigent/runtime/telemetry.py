@@ -289,12 +289,14 @@ def session_scope(session_id: str | None) -> Iterator[None]:
     session boundary — the FastAPI request hook, an executor turn, a
     forwarder task — so all runner/harness operations (current and future,
     including DB/httpx child spans) get the attribute generically, instead
-    of stamping each span by hand. No-op for a falsy id or when telemetry
-    is off.
+    of stamping each span by hand. No-op for a falsy id. Binds the context
+    var even when telemetry is off so :func:`current_session_id` works
+    without ``OMNIGENT_TELEMETRY_ENABLED``; span stamping still requires
+    telemetry.
 
     :param session_id: The Omnigent session (conversation) id, e.g. ``conv_…``.
     """
-    if not session_id or not telemetry_enabled():
+    if not session_id:
         yield
         return
     token = _session_id_var.set(session_id)

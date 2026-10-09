@@ -462,6 +462,8 @@ def test_configured_harness_map_covers_all_spellings(
         "hermes",
         "hermes-native",
         "native-hermes",
+        # Intentional opt-in factory gate harness (launch env-gated; keyed for picker lookup).
+        "factory-gate-a-real",
         # Generic ACP harness — config-gated (≥1 agent in the acp: block), no CLI
         # binary of its own; the acp:<slug> picks are config-derived, not keyed here.
         "acp",
