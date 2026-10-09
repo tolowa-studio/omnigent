@@ -30,6 +30,8 @@ from omnigent.inner.executor import ExecutorError, TextChunk, TurnComplete
 from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 
 _ORDER_ID = "ord-abc-123"
+# Deterministic shape from Motion Core makeOrderId("TOL-701") (slug + compact UTC + suffix).
+_CORE_FACTORY_ORDER_ID = "tol-701-20260928T193739-9afc6322"
 _SECRET_TOKEN = "super-secret-motion-token"
 _RAW_RECEIPT = {"prompt": "do not leak", "token": _SECRET_TOKEN}
 
@@ -124,6 +126,17 @@ def test_validate_motion_order_id_rejects_traversal() -> None:
         validate_motion_order_id("has space")
     with pytest.raises(ValueError, match="order_id"):
         validate_motion_order_id("UPPER")
+
+
+def test_validate_motion_order_id_accepts_motion_core_factory_shape() -> None:
+    validate_motion_order_id(_CORE_FACTORY_ORDER_ID)
+
+
+def test_validate_motion_order_id_rejects_arbitrary_uppercase_outside_factory_timestamp() -> None:
+    with pytest.raises(ValueError, match="order_id"):
+        validate_motion_order_id("TOL-701-20260928T193739-9afc6322")
+    with pytest.raises(ValueError, match="order_id"):
+        validate_motion_order_id("tol-701-20260928T193739-9AFC6322")
 
 
 def test_read_motion_order_status_summary_success(tmp_path: Path) -> None:
