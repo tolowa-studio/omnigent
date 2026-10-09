@@ -37,6 +37,10 @@ _REVIEW_MUTATION_DENY = (
 _TRUSTED_CURSOR_BASH_LAUNCHER_SHA256 = (
     "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233"
 )
+_TRUSTED_CURSOR_NODE_SHA256 = "ebd2d552c7bebde593dd0390530963ad28de56bccde6ce387cdbe55fb0b6fb8e"
+_TRUSTED_CURSOR_INDEX_JS_SHA256 = (
+    "f6bd8dece34b56431ee74f1ac827e032d054381085e7da7088e85abdd1008330"
+)
 
 
 def _materialize_profile(target: Path, *, read_only: bool) -> dict[str, Any]:
@@ -96,11 +100,21 @@ def fleet_operator_home() -> Path:
 
 
 def _path_has_symlink_component(path: Path) -> bool:
+    """Reject user-controlled symlink hops; allow macOS /var -> /private/var redirect."""
     try:
-        candidate = path.expanduser()
+        current = path.expanduser()
     except OSError:
         return True
-    return any(part.is_symlink() for part in (candidate, *candidate.parents))
+    while True:
+        if current.is_symlink():
+            if current == Path("/var"):
+                break
+            return True
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return False
 
 
 def _valid_config_directory(path: Path) -> bool:
@@ -138,6 +152,43 @@ def _cursor_agent_versions_root(operator_home: Path) -> Path:
     return operator_home / ".local/share/cursor-agent/versions"
 
 
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _bash_launcher_siblings_trusted(node: Path, entry: Path) -> bool:
+    node_hash = _file_sha256(node)
+    entry_hash = _file_sha256(entry)
+    return (
+        node_hash == _TRUSTED_CURSOR_NODE_SHA256 and entry_hash == _TRUSTED_CURSOR_INDEX_JS_SHA256
+    )
+
+
+def _resolved_under_versions_root(path: Path, versions_root: Path) -> Path | None:
+    try:
+        resolved = path.resolve(strict=False)
+        versions_resolved = versions_root.resolve(strict=False)
+    except OSError:
+        return None
+    try:
+        relative = resolved.relative_to(versions_resolved)
+    except ValueError:
+        return None
+    if len(relative.parts) != 2 or relative.parts[1] != "cursor-agent":
+        return None
+    version_entry = versions_root / relative.parts[0]
+    if version_entry.is_symlink():
+        return None
+    try:
+        version_entry.resolve(strict=False).relative_to(versions_resolved)
+    except ValueError:
+        return None
+    return resolved
+
+
 def _wrapper_like_vendor_binary(path: Path) -> bool:
     try:
         payload = path.read_bytes()
@@ -167,19 +218,10 @@ def _wrapper_like_vendor_binary(path: Path) -> bool:
             and os.access(node, os.X_OK)
             and entry.is_file()
             and not entry.is_symlink()
+            and _bash_launcher_siblings_trusted(node, entry)
         )
-    # Installed non-script launchers must have a native executable header.
-    return not head.startswith(
-        (
-            b"\x7fELF",
-            b"\xfe\xed\xfa\xce",
-            b"\xce\xfa\xed\xfe",
-            b"\xfe\xed\xfa\xcf",
-            b"\xcf\xfa\xed\xfe",
-            b"\xca\xfe\xba\xbe",
-            b"\xbe\xba\xfe\xca",
-        )
-    )
+    # Only the pinned Bash launcher chain is trusted; native binaries are not admissible.
+    return True
 
 
 def _installed_vendor_candidates(operator_home: Path) -> list[Path]:
@@ -190,15 +232,23 @@ def _installed_vendor_candidates(operator_home: Path) -> list[Path]:
             continue
         if _wrapper_like_vendor_binary(path):
             continue
-        try:
-            candidates.append(path.resolve(strict=False))
-        except OSError:
+        resolved = _resolved_under_versions_root(path, versions)
+        if resolved is None:
             continue
+        candidates.append(resolved)
     return candidates
 
 
-def _newest_vendor_under(operator_home: Path) -> Path | None:
-    candidates = _installed_vendor_candidates(operator_home)
+def _newest_vendor_under(operator_home: Path, *, wrapper_resolved: Path) -> Path | None:
+    candidates: list[Path] = []
+    for path in _installed_vendor_candidates(operator_home):
+        trusted = _trusted_vendor_path(
+            path,
+            operator_home=operator_home,
+            wrapper_resolved=wrapper_resolved,
+        )
+        if trusted is not None:
+            candidates.append(trusted)
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime)
@@ -211,16 +261,11 @@ def _trusted_vendor_path(
         return None
     if not path.is_file() or path.is_symlink() or not os.access(path, os.X_OK):
         return None
-    try:
-        resolved = path.resolve(strict=False)
-    except OSError:
+    versions_root = _cursor_agent_versions_root(operator_home)
+    resolved = _resolved_under_versions_root(path, versions_root)
+    if resolved is None:
         return None
     if resolved == wrapper_resolved:
-        return None
-    versions_root = _cursor_agent_versions_root(operator_home).resolve(strict=False)
-    try:
-        resolved.relative_to(versions_root)
-    except ValueError:
         return None
     return resolved
 
@@ -248,7 +293,7 @@ def trusted_cursor_vendor_binary() -> str | None:
         )
         return str(chosen) if chosen is not None else None
 
-    from_versions = _newest_vendor_under(operator_home)
+    from_versions = _newest_vendor_under(operator_home, wrapper_resolved=wrapper_resolved)
     if from_versions is not None and from_versions != wrapper_resolved:
         return str(from_versions)
     return None

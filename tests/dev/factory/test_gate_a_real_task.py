@@ -471,26 +471,98 @@ def test_trusted_vendor_rejects_copied_wrapper_in_vendor_slot(
     assert trusted_cursor_vendor_binary() is None
 
 
+def _pinned_installed_cursor_version_dir() -> Path | None:
+    installed_versions = Path.home() / ".local/share/cursor-agent/versions"
+    launcher_pin = "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233"
+    node_pin = "ebd2d552c7bebde593dd0390530963ad28de56bccde6ce387cdbe55fb0b6fb8e"
+    index_pin = "f6bd8dece34b56431ee74f1ac827e032d054381085e7da7088e85abdd1008330"
+    for path in sorted(installed_versions.glob("*/cursor-agent")):
+        version_dir = path.parent
+        node = version_dir / "node"
+        index = version_dir / "index.js"
+        if not node.is_file() or not index.is_file():
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != launcher_pin:
+            continue
+        if hashlib.sha256(node.read_bytes()).hexdigest() != node_pin:
+            continue
+        if hashlib.sha256(index.read_bytes()).hexdigest() != index_pin:
+            continue
+        return version_dir
+    return None
+
+
 def test_trusted_vendor_accepts_installed_bash_launcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    source_dir = _pinned_installed_cursor_version_dir()
+    if source_dir is None:
+        pytest.skip("pinned installed Cursor launcher unavailable")
     operator_home = tmp_path / "operator"
     version_dir = operator_home / ".local/share/cursor-agent/versions/2026.10.01-test"
     version_dir.mkdir(parents=True)
     launcher = version_dir / "cursor-agent"
-    installed_versions = Path.home() / ".local/share/cursor-agent/versions"
-    source = next(
-        (
-            path
-            for path in installed_versions.glob("*/cursor-agent")
-            if hashlib.sha256(path.read_bytes()).hexdigest()
-            == "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233"
-        ),
-        None,
-    )
-    if source is None:
+    launcher.write_bytes((source_dir / "cursor-agent").read_bytes())
+    launcher.chmod(0o755)
+    node = version_dir / "node"
+    node.write_bytes((source_dir / "node").read_bytes())
+    node.chmod(0o755)
+    (version_dir / "index.js").write_bytes((source_dir / "index.js").read_bytes())
+    wrapper = operator_home / "motion-cursor-agent"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("OMNIGENT_FACTORY_OPERATOR_HOME", str(operator_home))
+    monkeypatch.setenv("GATE_A_REAL_CURSOR_EXECUTABLE", str(wrapper))
+    monkeypatch.delenv("CURSOR_AGENT_REAL_BIN", raising=False)
+    chosen = trusted_cursor_vendor_binary()
+    assert chosen is not None
+    assert Path(chosen).resolve() == launcher.resolve()
+
+
+def test_trusted_vendor_accepts_operator_home_under_macos_var_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_dir = _pinned_installed_cursor_version_dir()
+    if source_dir is None:
         pytest.skip("pinned installed Cursor launcher unavailable")
-    launcher.write_bytes(source.read_bytes())
+    operator_home = tmp_path / "operator"
+    version_dir = operator_home / ".local/share/cursor-agent/versions/2026.10.01-test"
+    version_dir.mkdir(parents=True)
+    launcher = version_dir / "cursor-agent"
+    launcher.write_bytes((source_dir / "cursor-agent").read_bytes())
+    launcher.chmod(0o755)
+    node = version_dir / "node"
+    node.write_bytes((source_dir / "node").read_bytes())
+    node.chmod(0o755)
+    (version_dir / "index.js").write_bytes((source_dir / "index.js").read_bytes())
+    wrapper = operator_home / "motion-cursor-agent"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    if str(operator_home).startswith("/private/var/"):
+        var_operator_home = Path("/var") / operator_home.relative_to("/private/var")
+    elif str(operator_home).startswith("/var/"):
+        var_operator_home = operator_home
+    else:
+        pytest.skip("unexpected pytest temp directory prefix")
+    monkeypatch.setenv("OMNIGENT_FACTORY_OPERATOR_HOME", str(var_operator_home))
+    monkeypatch.setenv("GATE_A_REAL_CURSOR_EXECUTABLE", str(wrapper))
+    monkeypatch.delenv("CURSOR_AGENT_REAL_BIN", raising=False)
+    chosen = trusted_cursor_vendor_binary()
+    assert chosen is not None
+    assert Path(chosen).resolve() == launcher.resolve()
+
+
+def test_trusted_vendor_rejects_substituted_launcher_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_dir = _pinned_installed_cursor_version_dir()
+    if source_dir is None:
+        pytest.skip("pinned installed Cursor launcher unavailable")
+    operator_home = tmp_path / "operator"
+    version_dir = operator_home / ".local/share/cursor-agent/versions/2026.10.01-test"
+    version_dir.mkdir(parents=True)
+    launcher = version_dir / "cursor-agent"
+    launcher.write_bytes((source_dir / "cursor-agent").read_bytes())
     launcher.chmod(0o755)
     node = version_dir / "node"
     node.write_bytes(b"\x7fELF-test")
@@ -502,7 +574,66 @@ def test_trusted_vendor_accepts_installed_bash_launcher(
     monkeypatch.setenv("OMNIGENT_FACTORY_OPERATOR_HOME", str(operator_home))
     monkeypatch.setenv("GATE_A_REAL_CURSOR_EXECUTABLE", str(wrapper))
     monkeypatch.delenv("CURSOR_AGENT_REAL_BIN", raising=False)
-    assert trusted_cursor_vendor_binary() == str(launcher.resolve())
+    assert trusted_cursor_vendor_binary() is None
+
+
+def test_trusted_vendor_rejects_unpinned_native_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_dir = _pinned_installed_cursor_version_dir()
+    if source_dir is None:
+        pytest.skip("pinned installed Cursor launcher unavailable")
+    operator_home = tmp_path / "operator"
+    versions = operator_home / ".local/share/cursor-agent/versions"
+    bash_dir = versions / "2026.10.01-bash"
+    bash_dir.mkdir(parents=True)
+    launcher = bash_dir / "cursor-agent"
+    launcher.write_bytes((source_dir / "cursor-agent").read_bytes())
+    launcher.chmod(0o755)
+    (bash_dir / "node").write_bytes((source_dir / "node").read_bytes())
+    (bash_dir / "node").chmod(0o755)
+    (bash_dir / "index.js").write_bytes((source_dir / "index.js").read_bytes())
+    native_dir = versions / "2026.10.02-native"
+    native_dir.mkdir(parents=True)
+    native = native_dir / "cursor-agent"
+    native.write_bytes(b"\x7fELF-not-a-wrapper")
+    native.chmod(0o755)
+    wrapper = operator_home / "motion-cursor-agent"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("OMNIGENT_FACTORY_OPERATOR_HOME", str(operator_home))
+    monkeypatch.setenv("GATE_A_REAL_CURSOR_EXECUTABLE", str(wrapper))
+    monkeypatch.delenv("CURSOR_AGENT_REAL_BIN", raising=False)
+    chosen = trusted_cursor_vendor_binary()
+    assert chosen is not None
+    assert Path(chosen).resolve() == launcher.resolve()
+
+
+def test_trusted_vendor_rejects_symlinked_version_directory_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_dir = _pinned_installed_cursor_version_dir()
+    if source_dir is None:
+        pytest.skip("pinned installed Cursor launcher unavailable")
+    operator_home = tmp_path / "operator"
+    outside = tmp_path / "outside-version"
+    outside.mkdir()
+    launcher = outside / "cursor-agent"
+    launcher.write_bytes((source_dir / "cursor-agent").read_bytes())
+    launcher.chmod(0o755)
+    (outside / "node").write_bytes((source_dir / "node").read_bytes())
+    (outside / "node").chmod(0o755)
+    (outside / "index.js").write_bytes((source_dir / "index.js").read_bytes())
+    versions = operator_home / ".local/share/cursor-agent/versions"
+    versions.mkdir(parents=True)
+    (versions / "2026.10.99-escape").symlink_to(outside, target_is_directory=True)
+    wrapper = operator_home / "motion-cursor-agent"
+    wrapper.write_text("#!/bin/sh\nexec /usr/bin/true\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("OMNIGENT_FACTORY_OPERATOR_HOME", str(operator_home))
+    monkeypatch.setenv("GATE_A_REAL_CURSOR_EXECUTABLE", str(wrapper))
+    monkeypatch.delenv("CURSOR_AGENT_REAL_BIN", raising=False)
+    assert trusted_cursor_vendor_binary() is None
 
 
 def test_trusted_vendor_explicit_invalid_override_fails_closed(
