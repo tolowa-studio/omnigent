@@ -46,8 +46,10 @@ Layout:
 Chat commands for Gate A tasks are unchanged (`run approved task <task_id>`,
 `review approved task <task_id>`, `status <task_id>`). An additional read-only
 Motion Core bridge command is available when motion pin env vars are set (see
-below): `order status <order_id>`. Submit, start, and cancel are **not**
-implemented in this harness.
+below): `order status <order_id>`. Opt-in draft submit is available when
+`OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1` and task contracts are pinned (see
+below): `order submit <task_id>`. Start, cancel, merge, and deployment are
+**not** implemented in this harness.
 
 Task IDs are validated strictly (no paths, separators, or whitespace). Symlinks,
 traversal, missing specs, and mismatched `task_id` in the spec file are
@@ -80,12 +82,44 @@ Chat command (exact):
 order status <order_id>
 ```
 
+#### Motion Core draft order submit (phase-2 bridge, opt-in)
+
+Default **off**. When enabled, creates a **draft** order via Motion Core
+`new --task-stdin` only (no worker start). Pin approved task JSON contracts at
+host startup; chat supplies a strict `task_id` only (never JSON or paths).
+
+```bash
+export OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1
+export OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR=/absolute/path/to/approved-task-contracts
+export OMNIGENT_FACTORY_MOTION_CORE_ROOT=/absolute/path/to/motion-core
+export OMNIGENT_FACTORY_MOTION_ORDERS_ROOT=/absolute/path/to/orders
+```
+
+Layout: `OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR/<task_id>.json` — one bounded
+JSON object per task matching Motion Core structured submit v2 stdin: required string
+fields `client` (already-canonical client id), `repo`, `worktree` (absolute path),
+`branch`, `objective`, `scope`, `acceptance`, `authority_ref`, and `idempotency_key`
+(must equal `<task_id>`); required policy fields `gates` and `human_gates` (each a
+non-empty array of up to 20 single-line strings, max 512 chars per entry), `base_sha`
+(40- or 64-char lowercase hex commit), `review` (non-empty single-line string), and
+`non_goals` (array, may be empty, same entry bounds); optional `brief_hash`. Unknown
+top-level fields are rejected before Core runs (generic error, no field names echoed).
+The harness returns a safe summary
+(`order_id`, `work_id`, `brief_hash`, `state`, `submit_status` of `created` or
+`idempotent_replay`) and does not echo task body, authority, or CLI stderr.
+
+Chat command (exact):
+
+```text
+order submit <task_id>
+```
+
 When using `omnigent.cli host`, include the motion pins in passthrough together
 with the Gate A binding vars. Append `,CLOUDSDK_CONFIG` only if Cursor auth on
 the host uses that config path (omit otherwise). For example:
 
 ```bash
-export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
+export OMNIGENT_RUNNER_ENV_PASSTHROUGH=OMNIGENT_FACTORY_GATE_A_REAL_TASK,OMNIGENT_FACTORY_GATE_A_REAL_CHAT,OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR,OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT,OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT,OMNIGENT_FACTORY_MOTION_TASK_CONTRACTS_DIR,OMNIGENT_FACTORY_MOTION_CORE_ROOT,OMNIGENT_FACTORY_MOTION_ORDERS_ROOT,CLOUDSDK_CONFIG
 ```
 
 Single-spec passthrough example:
@@ -108,6 +142,9 @@ paths or task IDs):
   verifies receipt `task_id`, `spec_sha256`, and `workspace` against the bound spec
 - `order status <order_id>` — read-only Motion Core order snapshot when
   `OMNIGENT_FACTORY_MOTION_CORE_ROOT` and `OMNIGENT_FACTORY_MOTION_ORDERS_ROOT`
+  are set (does not use Gate A spec/artifacts binding)
+- `order submit <task_id>` — Motion Core draft `new` when
+  `OMNIGENT_FACTORY_MOTION_ORDER_SUBMIT=1`, task contracts dir, and motion pins
   are set (does not use Gate A spec/artifacts binding)
 
 `status` fails closed on malformed receipts or when `task_id`, `spec_sha256`, or
