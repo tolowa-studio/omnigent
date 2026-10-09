@@ -408,7 +408,9 @@ async def test_registry_status_per_task_artifacts(
     art_b = artifacts_root / "task-b"
     art_a.mkdir()
     art_b.mkdir()
-    _receipt_for_spec(spec_a, ok=True).write(art_a / "receipt.json")
+    receipt_a = _receipt_for_spec(spec_a, ok=True)
+    receipt_a.post_review_manifest_sha256 = receipt_a.deliverable_manifest_sha256
+    receipt_a.write(art_a / "receipt.json")
     _receipt_for_spec(spec_b, ok=False).write(art_b / "receipt.json")
     _bind_registry_env(monkeypatch, spec_root=spec_root, artifacts_root=artifacts_root)
 
@@ -505,6 +507,7 @@ async def test_status_read_only_no_run(tmp_path: Path, monkeypatch: pytest.Monke
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     receipt = _receipt_for_spec(spec_path)
+    receipt.post_review_manifest_sha256 = receipt.deliverable_manifest_sha256
     receipt.write(artifacts / "receipt.json")
     monkeypatch.setenv(REAL_TASK_ENV, "1")
     monkeypatch.setenv(REAL_TASK_CHAT_ENV, "1")

@@ -86,7 +86,7 @@ def _sample_receipt(
         review_exit_code=0 if ok else None,
         verify_exit_code=0 if ok else None,
         deliverable_manifest_sha256="b" * 64,
-        post_review_manifest_sha256="c" * 64,
+        post_review_manifest_sha256="b" * 64,
         freeze_manifest_path="/tmp/artifacts/freeze/manifest.json",
         review_pass=ok,
         completed_at=utc_now_iso(),

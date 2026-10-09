@@ -29,6 +29,7 @@ REAL_TASK_SPEC_DIR_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR"
 REAL_TASK_ARTIFACTS_ROOT_ENV = "OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT"
 
 _OPERATOR_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_RECEIPT_MANIFEST_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
@@ -359,6 +360,49 @@ def _optional_str_field(data: dict[str, object], key: str) -> str | None:
     return _require_str_or_none(data, key)
 
 
+def _require_receipt_manifest_sha256(value: str | None, label: str) -> str:
+    if not value:
+        raise ValueError(f"receipt ok=true requires {label}")
+    if not _RECEIPT_MANIFEST_SHA256_RE.fullmatch(value):
+        raise ValueError(f"receipt ok=true requires {label} to be 64 lowercase hex chars")
+    return value
+
+
+def _reject_receipt_ok_success_evidence_mismatch(receipt: RealTaskReceipt) -> None:
+    """Fail closed when receipt.ok claims success but snapshot fields disagree."""
+    if not receipt.ok:
+        return
+    if receipt.problems:
+        raise ValueError("receipt ok=true requires problems to be empty")
+    if not receipt.review_pass:
+        raise ValueError("receipt ok=true requires review_pass true")
+    if receipt.builder_exit_code != 0:
+        raise ValueError("receipt ok=true requires builder_exit_code 0")
+    if receipt.review_exit_code != 0:
+        raise ValueError("receipt ok=true requires review_exit_code 0")
+    if receipt.verify_exit_code != 0:
+        raise ValueError("receipt ok=true requires verify_exit_code 0")
+    if not receipt.builder_session_ids:
+        raise ValueError("receipt ok=true requires nonempty builder_session_ids")
+    if not receipt.review_session_ids:
+        raise ValueError("receipt ok=true requires nonempty review_session_ids")
+    if not receipt.freeze_manifest_path:
+        raise ValueError("receipt ok=true requires freeze_manifest_path")
+    deliverable = _require_receipt_manifest_sha256(
+        receipt.deliverable_manifest_sha256,
+        "deliverable_manifest_sha256",
+    )
+    post_review = _require_receipt_manifest_sha256(
+        receipt.post_review_manifest_sha256,
+        "post_review_manifest_sha256",
+    )
+    if deliverable != post_review:
+        raise ValueError(
+            "receipt ok=true requires deliverable_manifest_sha256 "
+            "and post_review_manifest_sha256 to match"
+        )
+
+
 def _load_receipt_file(path: Path) -> RealTaskReceipt:
     if not path.is_file():
         raise ValueError(f"receipt not found: {path}")
@@ -410,6 +454,7 @@ def read_status_summary(
         raise ValueError("receipt spec_sha256 does not match bound spec")
     if receipt.workspace != str(spec.workspace):
         raise ValueError("receipt workspace does not match bound spec")
+    _reject_receipt_ok_success_evidence_mismatch(receipt)
     return format_safe_summary(receipt, receipt_path=receipt_path)
 
 
