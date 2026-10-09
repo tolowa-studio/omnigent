@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from unittest.mock import MagicMock
 
 import psutil
 import pytest
@@ -42,6 +43,62 @@ def _kill_quietly(proc: subprocess.Popen[object]) -> None:
     proc.wait(timeout=10)
 
 
+_SURVIVOR_LIVENESS_TIMEOUT_SECONDS = 2.0
+_SURVIVOR_LIVENESS_POLL_SECONDS = 0.05
+
+
+def _process_is_live(pid: int) -> bool:
+    """True only while *pid* is a running process (not reaped, not a zombie)."""
+    if not psutil.pid_exists(pid):
+        return False
+    try:
+        proc = psutil.Process(pid)
+        if proc.status() == psutil.STATUS_ZOMBIE:
+            return False
+        return proc.is_running()
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _assert_no_live_descendant(pid: int) -> None:
+    deadline = time.monotonic() + _SURVIVOR_LIVENESS_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not _process_is_live(pid):
+            return
+        time.sleep(_SURVIVOR_LIVENESS_POLL_SECONDS)
+    assert not _process_is_live(pid), f"TERM-ignoring descendant still running (pid={pid})"
+
+
+def test_process_is_live_distinguishes_zombie_from_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zombie_pid = 424242
+    live_pid = 424243
+    zombie = MagicMock()
+    zombie.is_running.return_value = True
+    zombie.status.return_value = psutil.STATUS_ZOMBIE
+    live = MagicMock()
+    live.is_running.return_value = True
+    live.status.return_value = psutil.STATUS_RUNNING
+
+    def fake_process(p: int) -> MagicMock:
+        if p == zombie_pid:
+            return zombie
+        if p == live_pid:
+            return live
+        raise psutil.NoSuchProcess(p)
+
+    monkeypatch.setattr(
+        psutil,
+        "pid_exists",
+        lambda p: p in {zombie_pid, live_pid},
+    )
+    monkeypatch.setattr(psutil, "Process", fake_process)
+
+    assert _process_is_live(zombie_pid) is False
+    assert _process_is_live(live_pid) is True
+
+
 def test_timeout_kills_term_ignoring_descendant_after_leader_exits(short_grace: None) -> None:
     result = session.run_in_new_session(
         [sys.executable, "-c", _STUBBORN_DESCENDANT],
@@ -50,8 +107,7 @@ def test_timeout_kills_term_ignoring_descendant_after_leader_exits(short_grace: 
     assert result.timed_out is True
     assert result.returncode == -9
     survivor_pid = int(result.stdout.strip())
-    time.sleep(0.1)
-    assert not psutil.pid_exists(survivor_pid)
+    _assert_no_live_descendant(survivor_pid)
 
 
 def test_timeout_does_not_signal_unrelated_session(short_grace: None) -> None:
