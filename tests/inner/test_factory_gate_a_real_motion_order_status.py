@@ -791,3 +791,251 @@ def test_orders_root_not_mutated_by_status_read(tmp_path: Path) -> None:
         subprocess_runner=_runner,
     )
     assert marker.read_text(encoding="utf-8") == before
+
+
+_BRIEF_HASH = "a" * 64
+_BASE_SHA_40 = "b" * 40
+_BASE_SHA_64 = "c" * 64
+_LINEAR_ISSUE = "TOL-701"
+_STRUCTURED_LEAK_PROBE = "structured-leak-probe"
+_BINDING_LINE_PREFIXES = (
+    "bound_linear_issue:",
+    "requested_linear_issue:",
+    "base_sha:",
+    "brief_hash:",
+)
+
+
+def _structured_v2_payload(*, base_sha: str = _BASE_SHA_40) -> dict[str, object]:
+    """Mirror the relevant shape of a real Core structured v2 draft with a bound issue."""
+    payload = _ok_payload()
+    payload["order"] = {
+        "order_id": _ORDER_ID,
+        "state": "new",
+        "linear": {"identifier": _LINEAR_ISSUE, "url": None, "pending": False},
+        "bound_linear_issue": {"identifier": _LINEAR_ISSUE},
+        "repo": _STRUCTURED_LEAK_PROBE,
+        "worktree": f"/tmp/{_STRUCTURED_LEAK_PROBE}",
+        "branch": _STRUCTURED_LEAK_PROBE,
+        "idempotency_key": _STRUCTURED_LEAK_PROBE,
+        "brief_hash": _BRIEF_HASH,
+        "structured_submit": {
+            "schema_id": "motion.order.structured-submit.v2",
+            "client_id": _STRUCTURED_LEAK_PROBE,
+            "idempotency_key": _STRUCTURED_LEAK_PROBE,
+            "brief_hash": _BRIEF_HASH,
+            "policy": {
+                "gates": [_STRUCTURED_LEAK_PROBE],
+                "base_sha": base_sha,
+                "human_gates": [_STRUCTURED_LEAK_PROBE] * 3,
+                "review": _STRUCTURED_LEAK_PROBE,
+                "non_goals": [_STRUCTURED_LEAK_PROBE] * 3,
+            },
+            "linear_issue": _LINEAR_ISSUE,
+        },
+        "created_at": "2026-10-11T00:00:00.000Z",
+        "updated_at": "2026-10-11T00:00:00.000Z",
+        "spec_path": f"/tmp/{_STRUCTURED_LEAK_PROBE}/spec.md",
+    }
+    return payload
+
+
+def _structured_order(payload: dict[str, object]) -> dict[str, object]:
+    order = payload["order"]
+    assert isinstance(order, dict)
+    return order
+
+
+def _binding_lines(summary: str) -> list[str]:
+    return [line for line in summary.splitlines() if line.startswith(_BINDING_LINE_PREFIXES)]
+
+
+def _read_with_payload(tmp_path: Path, payload: dict[str, object]) -> str:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    _install_fake_cli(core_root)
+    node_dir = _fake_node_dir(tmp_path)
+
+    def _runner(argv: list[str], _env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    return read_motion_order_status_summary(
+        _ORDER_ID,
+        {
+            MOTION_CORE_ROOT_ENV: str(core_root),
+            MOTION_ORDERS_ROOT_ENV: str(orders_root),
+            "PATH": str(node_dir),
+        },
+        subprocess_runner=_runner,
+    )
+
+
+@pytest.mark.parametrize("base_sha", [_BASE_SHA_40, _BASE_SHA_64])
+def test_read_motion_order_status_structured_v2_shows_bindings(
+    tmp_path: Path, base_sha: str
+) -> None:
+    summary = _read_with_payload(tmp_path, _structured_v2_payload(base_sha=base_sha))
+    lines = summary.splitlines()
+    assert "order_status_ok: true" in lines
+    assert "state: new" in lines
+    assert _binding_lines(summary) == [
+        f"bound_linear_issue: {_LINEAR_ISSUE}",
+        f"base_sha: {base_sha}",
+        f"brief_hash: {_BRIEF_HASH}",
+    ]
+    assert lines[-1].startswith("note: snapshot from Motion Core order status")
+    assert _STRUCTURED_LEAK_PROBE not in summary
+    assert "must not appear" not in summary
+
+
+@pytest.mark.parametrize("bound_state", ["absent", "null"])
+def test_read_motion_order_status_structured_v2_requested_but_unbound(
+    tmp_path: Path, bound_state: str
+) -> None:
+    payload = _structured_v2_payload()
+    order = _structured_order(payload)
+    order["linear"] = None
+    if bound_state == "absent":
+        del order["bound_linear_issue"]
+    else:
+        order["bound_linear_issue"] = None
+    summary = _read_with_payload(tmp_path, payload)
+    assert _binding_lines(summary) == [
+        f"requested_linear_issue: {_LINEAR_ISSUE}",
+        f"base_sha: {_BASE_SHA_40}",
+        f"brief_hash: {_BRIEF_HASH}",
+    ]
+    assert "bound_linear_issue:" not in summary
+    assert _STRUCTURED_LEAK_PROBE not in summary
+
+
+@pytest.mark.parametrize("issue_state", ["absent", "null"])
+@pytest.mark.parametrize("bound_state", ["absent", "null"])
+def test_read_motion_order_status_structured_v2_without_optional_issue(
+    tmp_path: Path, issue_state: str, bound_state: str
+) -> None:
+    payload = _structured_v2_payload()
+    order = _structured_order(payload)
+    structured = order["structured_submit"]
+    assert isinstance(structured, dict)
+    order["linear"] = None
+    if issue_state == "absent":
+        del structured["linear_issue"]
+    else:
+        structured["linear_issue"] = None
+    if bound_state == "absent":
+        del order["bound_linear_issue"]
+    else:
+        order["bound_linear_issue"] = None
+    summary = _read_with_payload(tmp_path, payload)
+    assert "order_status_ok: true" in summary.splitlines()
+    assert _binding_lines(summary) == [
+        f"base_sha: {_BASE_SHA_40}",
+        f"brief_hash: {_BRIEF_HASH}",
+    ]
+    assert _STRUCTURED_LEAK_PROBE not in summary
+
+
+@pytest.mark.parametrize("issue_state", ["absent", "null"])
+def test_read_motion_order_status_structured_v2_bound_without_requested_fails_closed(
+    tmp_path: Path, issue_state: str
+) -> None:
+    payload = _structured_v2_payload()
+    structured = _structured_order(payload)["structured_submit"]
+    assert isinstance(structured, dict)
+    if issue_state == "absent":
+        del structured["linear_issue"]
+    else:
+        structured["linear_issue"] = None
+    with pytest.raises(ValueError) as exc:
+        _read_with_payload(tmp_path, payload)
+    message = str(exc.value)
+    assert message == (
+        "Motion Core status order.bound_linear_issue is present without "
+        "structured_submit.linear_issue"
+    )
+    assert _LINEAR_ISSUE not in message
+
+
+_UNSAFE_PROBE = "TOL-9; rm -rf ~ secret-probe"
+
+
+def _set_path(payload: dict[str, object], path: tuple[str, ...], value: object) -> None:
+    target: object = payload
+    for key in path[:-1]:
+        assert isinstance(target, dict)
+        target = target[key]
+    assert isinstance(target, dict)
+    target[path[-1]] = value
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("order", "structured_submit", "linear_issue"), _UNSAFE_PROBE),
+        (("order", "structured_submit", "linear_issue"), "TOL-0"),
+        (("order", "structured_submit", "linear_issue"), "tol-701"),
+        (("order", "structured_submit", "linear_issue"), 701),
+        (("order", "structured_submit", "linear_issue"), "TOL-702"),
+        (("order", "structured_submit", "linear_issue"), " TOL-701"),
+        (("order", "bound_linear_issue", "identifier"), _UNSAFE_PROBE),
+        (("order", "bound_linear_issue", "identifier"), "TOL-702"),
+        (("order", "bound_linear_issue", "identifier"), "tol-701"),
+        (("order", "bound_linear_issue", "identifier"), "TOL-701\n"),
+        (("order", "bound_linear_issue", "identifier"), None),
+        (("order", "bound_linear_issue"), {}),
+        (("order", "bound_linear_issue"), [_LINEAR_ISSUE]),
+        (("order", "bound_linear_issue"), _UNSAFE_PROBE),
+        (("order", "brief_hash"), _UNSAFE_PROBE),
+        (("order", "brief_hash"), "A" * 64),
+        (("order", "brief_hash"), "d" * 64),
+        (("order", "brief_hash"), None),
+        (("order", "structured_submit", "brief_hash"), "e" * 63),
+        (("order", "structured_submit", "brief_hash"), "f" * 64),
+        (("order", "structured_submit", "policy", "base_sha"), _UNSAFE_PROBE),
+        (("order", "structured_submit", "policy", "base_sha"), "B" * 40),
+        (("order", "structured_submit", "policy", "base_sha"), "b" * 39),
+        (("order", "structured_submit", "policy", "base_sha"), None),
+        (("order", "structured_submit", "policy"), None),
+        (("order", "structured_submit", "schema_id"), _UNSAFE_PROBE),
+        (("order", "structured_submit"), _UNSAFE_PROBE),
+    ],
+)
+def test_read_motion_order_status_structured_v2_rejects_bad_bindings_without_echo(
+    tmp_path: Path,
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    payload = _structured_v2_payload()
+    _set_path(payload, path, value)
+    with pytest.raises(ValueError) as exc:
+        _read_with_payload(tmp_path, payload)
+    message = str(exc.value)
+    assert message.startswith("Motion Core status order.")
+    if isinstance(value, str):
+        assert value not in message
+    assert "TOL-" not in message
+    assert "secret-probe" not in message
+    assert _STRUCTURED_LEAK_PROBE not in message
+
+
+def test_read_motion_order_status_legacy_order_omits_bindings(tmp_path: Path) -> None:
+    payload = _ok_payload()
+    payload["order"] = {
+        "order_id": _ORDER_ID,
+        "state": "running",
+        "brief_hash": _BRIEF_HASH,
+        "bound_linear_issue": {"identifier": _LINEAR_ISSUE},
+    }
+    summary = _read_with_payload(tmp_path, payload)
+    assert not any(line.startswith(_BINDING_LINE_PREFIXES) for line in summary.splitlines())
+    assert summary == format_motion_order_safe_summary(
+        order_id=_ORDER_ID,
+        state="running",
+        cancellation_phase="none",
+        receipt_category_count=2,
+        report_ok=True,
+        report_unavailable_count=0,
+        report_mismatch_count=0,
+    )
