@@ -749,10 +749,43 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
             )
             return RealTaskRunResult(receipt=receipt, problems=problems)
         freeze_sha = _freeze_manifest_sha256(freeze_manifest)
+        _write_text(
+            artifacts / "review.profile.json",
+            json.dumps(spec.review_config_hashes, indent=2, sort_keys=True) + "\n",
+        )
+        write_resume_state(
+            state_path,
+            {
+                "builder_ok": builder_ok,
+                "spec_sha256": spec.spec_sha256,
+                "workspace": str(spec.workspace),
+                "builder_session_ids": builder_session_ids,
+                "builder_exit_code": builder_exit_code,
+                "builder_stdout_sha256": builder_stdout_sha,
+                "deliverable_manifest_sha256": inventory.manifest_sha256,
+                "freeze_manifest_sha256": freeze_sha,
+                "verify_exit_code": verify_code,
+            },
+        )
         review_config_parent = Path(
             tempfile.mkdtemp(prefix="gate-a-review-config-", dir=str(artifacts))
         )
-        review_profile = materialize_real_task_review_config_dir(review_config_parent)
+        try:
+            review_profile = materialize_real_task_review_config_dir(review_config_parent)
+        except OSError as exc:
+            problems.append(f"review config materialization failed: {exc}")
+            receipt = _fail_receipt(spec, problems)
+            receipt.builder_session_ids = builder_session_ids
+            receipt.builder_exit_code = builder_exit_code
+            receipt.verify_exit_code = verify_code
+            receipt.deliverable_manifest_sha256 = inventory.manifest_sha256
+            receipt.freeze_manifest_path = str(freeze_manifest)
+            _write_gate_receipt(
+                receipt,
+                artifacts / "receipt.json",
+                omnigent_session_id=options.omnigent_session_id,
+            )
+            return RealTaskRunResult(receipt=receipt, problems=problems)
         review_config_problems = _validate_review_config_hashes(
             spec, review_profile["effective_config_hashes"]
         )
