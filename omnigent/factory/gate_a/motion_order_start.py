@@ -73,6 +73,10 @@ _GATE_B_CHILD_ENV_ALLOWLIST = (
     "MOTION_FACTORY_GATE_B_LAUNCH_CLAIM",
     "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH",
 )
+_SIGNED_MODEL_FALLBACK_CHILD_ENV = {
+    "MOTION_FACTORY_MODEL_FALLBACK": "codex-claude",
+    "MOTION_FACTORY_MODEL_CHILD_ADMISSION": "broker",
+}
 
 MotionOrderStartSubprocessRunner = Callable[
     [list[str], dict[str, str]],
@@ -187,6 +191,13 @@ def _minimal_core_child_env(environ: dict[str, str]) -> dict[str, str]:
         value = environ.get(key)
         if value:
             minimal[key] = value
+    fallback_configured = any(key in environ for key in _SIGNED_MODEL_FALLBACK_CHILD_ENV)
+    if fallback_configured and any(
+        environ.get(key) != value for key, value in _SIGNED_MODEL_FALLBACK_CHILD_ENV.items()
+    ):
+        raise ValueError("signed model fallback configuration is invalid")
+    if fallback_configured:
+        minimal.update(_SIGNED_MODEL_FALLBACK_CHILD_ENV)
     minimal.update(_FORCED_MOTION_ORDER_ENV)
     if "PATH" not in minimal:
         raise ValueError("PATH is required to locate node for Motion Core order start")

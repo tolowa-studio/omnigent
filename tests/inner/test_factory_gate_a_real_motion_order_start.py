@@ -17,6 +17,7 @@ from omnigent.factory.gate_a.motion_order_start import (
     MOTION_ORDER_START_ENABLE_ENV,
     _cancellation_active,
     _default_subprocess_runner,
+    _minimal_core_child_env,
     _subprocess_timeout_for_argv,
     format_motion_order_start_safe_summary,
     motion_order_start_enabled,
@@ -485,6 +486,8 @@ def test_start_argv_and_forced_env(tmp_path: Path) -> None:
     assert "MOTION_RUN_RECORD_DIR" not in env
     assert env["CLOUDSDK_CONFIG"] == "/tmp/gcloud"
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
+    assert "MOTION_FACTORY_MODEL_FALLBACK" not in env
+    assert "MOTION_FACTORY_MODEL_CHILD_ADMISSION" not in env
     assert env["HOME"] == "/tmp/omnigent-home"
 
 
@@ -513,6 +516,8 @@ def test_start_gate_b_comment_id_argv_and_env_allowlist(tmp_path: Path) -> None:
                 "MOTION_FACTORY_GATE_B_CONSUME_LEDGER": "broker",
                 "MOTION_FACTORY_GATE_B_LAUNCH_CLAIM": "broker",
                 "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH": "on",
+                "MOTION_FACTORY_MODEL_FALLBACK": "codex-claude",
+                "MOTION_FACTORY_MODEL_CHILD_ADMISSION": "broker",
                 "LINEAR_API_KEY": "must-not-pass",
                 "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH_CLIENT_SECRET": "must-not-pass",
                 "OMNIGENT_FACTORY_SECRET": "must-not-pass",
@@ -536,11 +541,64 @@ def test_start_gate_b_comment_id_argv_and_env_allowlist(tmp_path: Path) -> None:
     assert env["MOTION_FACTORY_GATE_B_CONSUME_LEDGER"] == "broker"
     assert env["MOTION_FACTORY_GATE_B_LAUNCH_CLAIM"] == "broker"
     assert env["MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH"] == "on"
+    assert env["MOTION_FACTORY_MODEL_FALLBACK"] == "codex-claude"
+    assert env["MOTION_FACTORY_MODEL_CHILD_ADMISSION"] == "broker"
     assert "LINEAR_API_KEY" not in env
     assert "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH_CLIENT_SECRET" not in env
     assert "OMNIGENT_FACTORY_SECRET" not in env
     assert "MOTION_BROKER_URL" not in env
     assert "MOTION_FACTORY_GATE_B_BROKER_URL" not in env
+
+
+def test_signed_model_fallback_flags_require_the_exact_pair(tmp_path: Path) -> None:
+    base = {"PATH": "/usr/bin"}
+    default_env = _minimal_core_child_env(base)
+    assert "MOTION_FACTORY_MODEL_FALLBACK" not in default_env
+    assert "MOTION_FACTORY_MODEL_CHILD_ADMISSION" not in default_env
+    invalid_configs = (
+        {**base, "MOTION_FACTORY_MODEL_FALLBACK": "codex-claude"},
+        {
+            **base,
+            "MOTION_FACTORY_MODEL_FALLBACK": "attacker-value",
+            "MOTION_FACTORY_MODEL_CHILD_ADMISSION": "broker",
+        },
+        {
+            **base,
+            "MOTION_FACTORY_MODEL_FALLBACK": "codex-claude",
+            "MOTION_FACTORY_MODEL_CHILD_ADMISSION": "attacker-value",
+        },
+        {**base, "MOTION_FACTORY_MODEL_CHILD_ADMISSION": ""},
+    )
+    for config in invalid_configs:
+        with pytest.raises(ValueError, match="signed model fallback configuration is invalid"):
+            _minimal_core_child_env(config)
+
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    approvals = tmp_path / "approvals"
+    _write_approval(approvals, _ORDER_ID, _approval())
+    _install_fake_cli(core_root)
+    node_dir = _fake_node_dir(tmp_path)
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(ValueError, match="signed model fallback configuration is invalid"):
+        start_motion_order(
+            _ORDER_ID,
+            _start_env(
+                core_root=core_root,
+                orders_root=orders_root,
+                approvals_dir=approvals,
+                path=str(node_dir),
+                extra={"MOTION_FACTORY_MODEL_FALLBACK": "codex-claude"},
+            ),
+            subprocess_runner=runner,
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize(
