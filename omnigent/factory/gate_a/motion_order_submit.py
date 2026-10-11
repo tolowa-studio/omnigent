@@ -57,8 +57,12 @@ _TASK_CONTRACT_POLICY_KEYS = frozenset(
     }
 )
 _TASK_CONTRACT_ALLOWED_KEYS = (
-    _TASK_CONTRACT_REQUIRED_STRING_KEYS | _TASK_CONTRACT_POLICY_KEYS | frozenset({"brief_hash"})
+    _TASK_CONTRACT_REQUIRED_STRING_KEYS
+    | _TASK_CONTRACT_POLICY_KEYS
+    | frozenset({"brief_hash", "linear_issue"})
 )
+
+_LINEAR_ISSUE_RE = re.compile(r"^TOL-[1-9][0-9]*$")
 
 _MAX_POLICY_ARRAY_LEN = 20
 _MAX_POLICY_LINE_LEN = 512
@@ -203,6 +207,15 @@ def _validate_policy_base_sha(value: Any) -> None:
         raise ValueError("task contract policy is invalid")
 
 
+def _validate_linear_issue(value: Any) -> None:
+    if not isinstance(value, str):
+        raise ValueError("task contract linear_issue is invalid")
+    if not _is_single_line_text(value):
+        raise ValueError("task contract linear_issue is invalid")
+    if not _LINEAR_ISSUE_RE.fullmatch(value):
+        raise ValueError("task contract linear_issue is invalid")
+
+
 def _validate_task_contract_policy(data: dict[str, Any]) -> None:
     _validate_policy_string_array(data.get("gates"), allow_empty=False)
     _validate_policy_base_sha(data.get("base_sha"))
@@ -231,6 +244,8 @@ def _validate_task_contract_object(data: dict[str, Any], task_id: str) -> str:
     if brief_hash is not None:
         if not isinstance(brief_hash, str) or not _BRIEF_HASH_RE.fullmatch(brief_hash.strip()):
             raise ValueError("task contract brief_hash must be 64 lowercase hex chars")
+    if "linear_issue" in data:
+        _validate_linear_issue(data["linear_issue"])
     _validate_task_contract_policy(data)
     return client_id
 

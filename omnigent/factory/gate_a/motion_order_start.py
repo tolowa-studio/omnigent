@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from omnigent.factory.gate_a.gate_b_ids import require_gate_b_comment_id
 from omnigent.factory.gate_a.motion_order_status import (
     _MAX_STDIO_CHARS,
     _SUBPROCESS_TIMEOUT_S,
@@ -65,6 +66,13 @@ _FORCED_MOTION_ORDER_ENV = {
     "MOTION_ORDER_DETACH": "launchd",
     "MOTION_ORDER_CLIENT_SECRET_SCOPING": "1",
 }
+_GATE_B_CHILD_ENV_ALLOWLIST = (
+    "MOTION_FACTORY_GATE_B",
+    "MOTION_FACTORY_GATE_B_APPROVER_USER_ID",
+    "MOTION_FACTORY_GATE_B_CONSUME_LEDGER",
+    "MOTION_FACTORY_GATE_B_LAUNCH_CLAIM",
+    "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH",
+)
 
 MotionOrderStartSubprocessRunner = Callable[
     [list[str], dict[str, str]],
@@ -172,6 +180,10 @@ def load_order_start_approval(
 def _minimal_core_child_env(environ: dict[str, str]) -> dict[str, str]:
     minimal: dict[str, str] = {}
     for key in _CHILD_ENV_ALLOWLIST:
+        value = environ.get(key)
+        if value:
+            minimal[key] = value
+    for key in _GATE_B_CHILD_ENV_ALLOWLIST:
         value = environ.get(key)
         if value:
             minimal[key] = value
@@ -386,11 +398,14 @@ def start_motion_order(
     order_id: str,
     environ: dict[str, str] | None = None,
     *,
+    gate_b_comment_id: str | None = None,
     subprocess_runner: MotionOrderStartSubprocessRunner | None = None,
 ) -> str:
     if not motion_order_start_enabled(environ):
         raise ValueError(_start_disabled_message())
     validate_motion_order_id(order_id)
+    if gate_b_comment_id is not None:
+        require_gate_b_comment_id(gate_b_comment_id)
     env = dict(environ) if environ is not None else dict(os.environ)
     approval_brief_hash, approval_base_sha = load_order_start_approval(order_id, env)
     runner = subprocess_runner or _default_subprocess_runner
@@ -414,10 +429,16 @@ def start_motion_order(
         "start",
         order_id,
         "--execute-direct-path",
-        "--orders-root",
-        str(orders_root),
-        "--json",
     ]
+    if gate_b_comment_id is not None:
+        argv.extend(["--gate-b-comment-id", gate_b_comment_id])
+    argv.extend(
+        [
+            "--orders-root",
+            str(orders_root),
+            "--json",
+        ]
+    )
     child_env = _minimal_core_child_env(env)
     try:
         completed = runner(argv, child_env)

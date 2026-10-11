@@ -122,6 +122,72 @@ def test_motion_order_submit_disabled_by_default() -> None:
     assert not motion_order_submit_enabled({})
 
 
+def test_load_task_contract_accepts_linear_issue(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    _write_contract(contracts, _TASK_ID, _sample_contract(linear_issue="TOL-42"))
+    raw = load_task_contract_bytes(_TASK_ID, {MOTION_TASK_CONTRACTS_DIR_ENV: str(contracts)})
+    assert json.loads(raw.decode("utf-8"))["linear_issue"] == "TOL-42"
+
+
+@pytest.mark.parametrize(
+    "linear_issue",
+    [
+        "TOL-0",
+        "tol-1",
+        "TOL-1 ",
+        " TOL-1",
+        "TOL-\n1",
+        "TOL-",
+        "TOL-abc",
+    ],
+)
+def test_load_task_contract_rejects_malformed_linear_issue(
+    tmp_path: Path, linear_issue: str
+) -> None:
+    contracts = tmp_path / "contracts"
+    _write_contract(contracts, _TASK_ID, _sample_contract(linear_issue=linear_issue))
+    with pytest.raises(ValueError, match="linear_issue"):
+        load_task_contract_bytes(_TASK_ID, {MOTION_TASK_CONTRACTS_DIR_ENV: str(contracts)})
+
+
+def test_submit_passes_task_contract_stdin_unchanged_with_linear_issue(tmp_path: Path) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    contracts = tmp_path / "contracts"
+    _install_fixture_cli(core_root)
+    linear_issue = "TOL-9001"
+    _write_contract(contracts, _TASK_ID, _sample_contract(linear_issue=linear_issue))
+    env = _submit_env(contracts_dir=contracts, core_root=core_root, orders_root=orders_root)
+    captured_stdin: list[str] = []
+
+    def _runner(
+        argv: list[str], _env: dict[str, str], stdin_text: str
+    ) -> subprocess.CompletedProcess[str]:
+        captured_stdin.append(stdin_text)
+        order_id = expected_structured_order_id("fixture-client", _TASK_ID)
+        payload = {
+            "ok": True,
+            "idempotent": False,
+            "structured": True,
+            "order_id": order_id,
+            "work_id": order_id,
+            "brief_hash": "a" * 64,
+            "state": "new",
+            "linear": None,
+        }
+        return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
+
+    summary = submit_motion_order_draft(_TASK_ID, env, subprocess_runner=_runner)
+    assert "order_submit_ok: true" in summary
+    assert "no worker started" in summary
+    assert "launch_submitted" not in summary
+    assert "linear:" not in summary.lower()
+    assert len(captured_stdin) == 1
+    assert captured_stdin[0] == (contracts / f"{_TASK_ID}.json").read_text(encoding="utf-8")
+    assert json.loads(captured_stdin[0])["linear_issue"] == linear_issue
+
+
 def test_load_task_contract_rejects_unknown_field(tmp_path: Path) -> None:
     contracts = tmp_path / "contracts"
     contract = _sample_contract()
@@ -154,6 +220,8 @@ def test_submit_motion_order_draft_first_create_and_idempotent_replay(tmp_path: 
     assert "order_submit_ok: true" in first
     assert "submit_status: created" in first
     assert "state: new" in first
+    assert "launch_submitted" not in first
+    assert "no worker started" in first
     assert _SECRET_OBJECTIVE not in first
     assert "fixture-authority" not in first
     order_id_line = next(line for line in first.splitlines() if line.startswith("order_id:"))

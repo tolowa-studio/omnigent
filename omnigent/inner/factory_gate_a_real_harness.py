@@ -76,7 +76,11 @@ class FactoryGateARealExecutor(Executor):
             )
             return
         user_text = latest_user_message_text(messages)
-        command = parse_operator_command(user_text)
+        try:
+            command = parse_operator_command(user_text)
+        except ValueError as exc:
+            yield ExecutorError(message=str(exc))
+            return
         if command is None:
             yield TextChunk(text=usage_hint())
             yield TurnComplete(response=None)
@@ -104,7 +108,10 @@ class FactoryGateARealExecutor(Executor):
 
         if command.kind == "order_start":
             try:
-                summary = start_motion_order(command.task_id)
+                summary = start_motion_order(
+                    command.task_id,
+                    gate_b_comment_id=command.gate_b_comment_id,
+                )
             except ValueError as exc:
                 yield ExecutorError(message=str(exc))
                 return
