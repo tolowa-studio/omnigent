@@ -20,6 +20,7 @@ from dev.factory.gate_a_real.orchestration import (
 )
 from dev.factory.gate_a_real.receipt import RealTaskReceipt
 from dev.factory.gate_a_real.spec import RealTaskSpecError, load_real_task_spec
+from omnigent.factory.gate_a.gate_b_ids import require_gate_b_comment_id
 from omnigent.inner.datamodel import Message
 from omnigent.inner.executor import ExecutorEvent, TextChunk
 
@@ -36,6 +37,7 @@ RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
 ORDER_SUBMIT_PREFIX = "order submit "
 ORDER_START_PREFIX = "order start "
+ORDER_START_GATE_B_COMMENT_FLAG = "--gate-b-comment-id"
 ORDER_CANCEL_PREFIX = "order cancel "
 ORDER_RECONCILE_PREFIX = "order reconcile "
 ORDER_STATUS_PREFIX = "order status "
@@ -57,6 +59,7 @@ class OperatorCommand:
         "order_reconcile",
     ]
     task_id: str
+    gate_b_comment_id: str | None = None
 
 
 def factory_gate_a_real_enabled(environ: dict[str, str] | None = None) -> bool:
@@ -122,6 +125,38 @@ def latest_user_message_text(messages: Sequence[Message | dict[str, object]]) ->
     return ""
 
 
+def _parse_gate_b_comment_id(token: str) -> str:
+    if not token:
+        raise ValueError("gate-b-comment-id must be a UUID")
+    return require_gate_b_comment_id(token)
+
+
+def _is_single_line_operator_token(value: str) -> bool:
+    return "\n" not in value and "\r" not in value and " " not in value
+
+
+def _parse_order_start_command(remainder: str) -> OperatorCommand | None:
+    if not remainder:
+        return None
+    parts = remainder.split()
+    if len(parts) == 1:
+        order_id = parts[0]
+        if order_id and _is_single_line_operator_token(order_id):
+            return OperatorCommand(kind="order_start", task_id=order_id)
+        return None
+    if len(parts) == 3 and parts[1] == ORDER_START_GATE_B_COMMENT_FLAG:
+        order_id = parts[0]
+        if not order_id or not _is_single_line_operator_token(order_id):
+            return None
+        comment_id = _parse_gate_b_comment_id(parts[2])
+        return OperatorCommand(
+            kind="order_start",
+            task_id=order_id,
+            gate_b_comment_id=comment_id,
+        )
+    return None
+
+
 def parse_operator_command(text: str) -> OperatorCommand | None:
     stripped = text.strip()
     if stripped.startswith(ORDER_SUBMIT_PREFIX):
@@ -129,9 +164,8 @@ def parse_operator_command(text: str) -> OperatorCommand | None:
         if task_id and " " not in task_id:
             return OperatorCommand(kind="order_submit", task_id=task_id)
     if stripped.startswith(ORDER_START_PREFIX):
-        order_id = stripped[len(ORDER_START_PREFIX) :].strip()
-        if order_id and " " not in order_id:
-            return OperatorCommand(kind="order_start", task_id=order_id)
+        remainder = stripped[len(ORDER_START_PREFIX) :].strip()
+        return _parse_order_start_command(remainder)
     if stripped.startswith(ORDER_CANCEL_PREFIX):
         order_id = stripped[len(ORDER_CANCEL_PREFIX) :].strip()
         if order_id and " " not in order_id:
@@ -520,8 +554,11 @@ def usage_hint() -> str:
         "  review approved task <task_id>\n"
         "  status <task_id>\n"
         "  order status <order_id>  (Motion Core snapshot; requires motion pin env vars)\n"
-        "  order submit <task_id>  (Motion Core draft new; opt-in submit + contracts dir)\n"
+        "  order submit <task_id>  (Motion Core draft only; no worker launch; "
+        "optional existing issue from approved contract)\n"
         "  order start <order_id>  (Motion Core launch; opt-in start + local approval file)\n"
+        "  order start <order_id> --gate-b-comment-id <uuid>  "
+        "(enforced Gate B host; same opt-in)\n"
         "  order cancel <order_id>  (Motion Core cancel; explicit local-beta opt-in)\n"
         "  order reconcile <order_id>  (Motion Core PR reconcile; explicit local-beta opt-in)\n"
         "Spec and artifacts roots are pinned by operator env vars at host startup; "

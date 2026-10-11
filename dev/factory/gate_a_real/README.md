@@ -107,8 +107,12 @@ fields `client` (already-canonical client id), `repo`, `worktree` (absolute path
 (must equal `<task_id>`); required policy fields `gates` and `human_gates` (each a
 non-empty array of up to 20 single-line strings, max 512 chars per entry), `base_sha`
 (40- or 64-char lowercase hex commit), `review` (non-empty single-line string), and
-`non_goals` (array, may be empty, same entry bounds); optional `brief_hash`. Unknown
-top-level fields are rejected before Core runs (generic error, no field names echoed).
+`non_goals` (array, may be empty, same entry bounds); optional `brief_hash`; optional
+`linear_issue` (canonical Tolowa identifier `TOL-<positive integer>` only — no
+whitespace, controls, or silent normalization). Unknown top-level fields are
+rejected before Core runs (generic error, no field names echoed). Approved contract
+bytes are passed to Core stdin unchanged; the chat summary does not claim
+`bound_linear_issue` was persisted (Core `new` JSON may still report `linear: null`).
 The harness returns a safe summary
 (`order_id`, `work_id`, `brief_hash`, `state`, `submit_status` of `created` or
 `idempotent_replay`) and does not echo task body, authority, or CLI stderr.
@@ -147,8 +151,15 @@ The harness runs Core `status <order_id> --orders-root <root> --json`, requires
 active cancellation (`cancel_request`, cancel phases other than Core's idle
 `active`/`none`, or markers). It compares those bindings to the approval
 file, then runs `start <order_id> --execute-direct-path --orders-root <root>
---json` with `MOTION_ORDER_AUTO_MERGE=0`, `MOTION_ORDER_DUPLICATE_CHECK=enforce`,
+--json` (add `--gate-b-comment-id <uuid>` when the operator command includes it)
+with `MOTION_ORDER_AUTO_MERGE=0`, `MOTION_ORDER_DUPLICATE_CHECK=enforce`,
 `MOTION_ORDER_DETACH=launchd`, and `MOTION_ORDER_CLIENT_SECRET_SCOPING=1`.
+The child forwards only operator-owned Gate B toggles when set in the host
+environment: `MOTION_FACTORY_GATE_B`,
+`MOTION_FACTORY_GATE_B_APPROVER_USER_ID`, `MOTION_FACTORY_GATE_B_CONSUME_LEDGER`,
+`MOTION_FACTORY_GATE_B_LAUNCH_CLAIM`, and `MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH`
+(host `/etc/tolowa/factory-gate-b.json` pins broker URL, audience, GSM, caller, and
+buckets; secrets and arbitrary `MOTION_*` / `OMNIGENT_*` overrides are not passed).
 The child uses the pinned `CLOUDSDK_CONFIG`; credential-file override variables
 are not forwarded. On timeout or nonzero exit it does not claim
 success — use `order status` to inspect outcome. On success it reports launch
@@ -165,7 +176,11 @@ Chat command (exact):
 
 ```text
 order start <order_id>
+order start <order_id> --gate-b-comment-id <uuid>
 ```
+
+On enforced Gate B hosts, Core requires the Linear comment UUID; the legacy
+`order start <order_id>` form remains for local-beta tests without the flag.
 
 #### Motion Core order cancel (phase-2 bridge, local beta)
 
@@ -232,6 +247,8 @@ paths or task IDs):
 - `order start <order_id>` — Motion Core `start --execute-direct-path` when
   `OMNIGENT_FACTORY_MOTION_ORDER_START=1`, approvals dir, and motion pins are
   set (does not use Gate A spec/artifacts binding)
+- `order start <order_id> --gate-b-comment-id <uuid>` — same opt-in start with
+  enforced Gate B comment binding (invalid/extra tokens rejected before Core)
 - `order cancel <order_id>` — Motion Core cancel when
   `OMNIGENT_FACTORY_MOTION_ORDER_CANCEL=1` and motion pins are set (does not
   use Gate A spec/artifacts binding or the order-start approval file;

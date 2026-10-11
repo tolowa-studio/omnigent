@@ -36,6 +36,7 @@ from omnigent.inner.executor import ExecutorError, TextChunk
 from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 
 _ORDER_ID = "ord-start-abc"
+_GATE_B_COMMENT_ID = "550e8400-e29b-41d4-a716-446655440000"
 _BRIEF_HASH = "a" * 64
 _BASE_SHA = "b" * 40
 _OTHER_HASH = "c" * 64
@@ -193,9 +194,59 @@ def test_parse_operator_command_order_start_exact() -> None:
     assert parse_operator_command(f"order start {_ORDER_ID}") == OperatorCommand(
         kind="order_start", task_id=_ORDER_ID
     )
+    assert parse_operator_command(
+        f"order start {_ORDER_ID} --gate-b-comment-id {_GATE_B_COMMENT_ID}"
+    ) == OperatorCommand(
+        kind="order_start",
+        task_id=_ORDER_ID,
+        gate_b_comment_id=_GATE_B_COMMENT_ID,
+    )
     assert parse_operator_command("order start") is None
     assert parse_operator_command(f"order start {_ORDER_ID} extra") is None
     assert parse_operator_command(f"ORDER start {_ORDER_ID}") is None
+
+
+def test_parse_operator_command_order_start_rejects_invalid_gate_b_uuid() -> None:
+    with pytest.raises(ValueError, match="gate-b-comment-id must be a UUID"):
+        parse_operator_command(f"order start {_ORDER_ID} --gate-b-comment-id not-a-uuid")
+
+
+@pytest.mark.parametrize(
+    "comment_id",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "{550e8400-e29b-41d4-a716-446655440000}",
+        "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+        "550e8400e29b41d4a716446655440000",
+        "550e8400-e29b-61d4-a716-446655440000",
+        "550e8400-e29b-41d4\x00-a716-446655440000",
+    ],
+)
+def test_parse_operator_command_order_start_rejects_noncanonical_gate_b_uuid(
+    comment_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="gate-b-comment-id must be a UUID"):
+        parse_operator_command(f"order start {_ORDER_ID} --gate-b-comment-id {comment_id}")
+
+
+def test_parse_operator_command_order_start_rejects_whitespace_in_gate_b_uuid() -> None:
+    assert (
+        parse_operator_command(
+            f"order start {_ORDER_ID} --gate-b-comment-id 550e8400-e29b-41d4-a716 446655440000"
+        )
+        is None
+    )
+
+
+def test_parse_operator_command_order_start_accepts_uppercase_gate_b_uuid() -> None:
+    upper = _GATE_B_COMMENT_ID.upper()
+    assert parse_operator_command(
+        f"order start {_ORDER_ID} --gate-b-comment-id {upper}"
+    ) == OperatorCommand(
+        kind="order_start",
+        task_id=_ORDER_ID,
+        gate_b_comment_id=upper,
+    )
 
 
 def test_motion_order_start_disabled_by_default() -> None:
@@ -435,6 +486,123 @@ def test_start_argv_and_forced_env(tmp_path: Path) -> None:
     assert env["CLOUDSDK_CONFIG"] == "/tmp/gcloud"
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
     assert env["HOME"] == "/tmp/omnigent-home"
+
+
+def test_start_gate_b_comment_id_argv_and_env_allowlist(tmp_path: Path) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    approvals = tmp_path / "approvals"
+    _write_approval(approvals, _ORDER_ID, _approval())
+    _install_fake_cli(core_root)
+    node_dir = _fake_node_dir(tmp_path)
+    captured_argv, captured_env, phases, runner = _dual_runner(
+        status_payload=_precheck_payload(),
+        start_payload=_start_ok_payload(),
+    )
+    start_motion_order(
+        _ORDER_ID,
+        _start_env(
+            core_root=core_root,
+            orders_root=orders_root,
+            approvals_dir=approvals,
+            path=str(node_dir),
+            extra={
+                "MOTION_FACTORY_GATE_B": "enforce",
+                "MOTION_FACTORY_GATE_B_APPROVER_USER_ID": "operator-uuid",
+                "MOTION_FACTORY_GATE_B_CONSUME_LEDGER": "broker",
+                "MOTION_FACTORY_GATE_B_LAUNCH_CLAIM": "broker",
+                "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH": "on",
+                "LINEAR_API_KEY": "must-not-pass",
+                "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH_CLIENT_SECRET": "must-not-pass",
+                "OMNIGENT_FACTORY_SECRET": "must-not-pass",
+                "MOTION_BROKER_URL": "https://evil.example",
+                "MOTION_FACTORY_GATE_B_BROKER_URL": "https://evil-gate-b.example",
+            },
+        ),
+        gate_b_comment_id=_GATE_B_COMMENT_ID,
+        subprocess_runner=runner,
+    )
+    assert phases == ["status", "start"]
+    start_argv = captured_argv[1]
+    assert start_argv[4:7] == [
+        "--execute-direct-path",
+        "--gate-b-comment-id",
+        _GATE_B_COMMENT_ID,
+    ]
+    env = captured_env[1]
+    assert env["MOTION_FACTORY_GATE_B"] == "enforce"
+    assert env["MOTION_FACTORY_GATE_B_APPROVER_USER_ID"] == "operator-uuid"
+    assert env["MOTION_FACTORY_GATE_B_CONSUME_LEDGER"] == "broker"
+    assert env["MOTION_FACTORY_GATE_B_LAUNCH_CLAIM"] == "broker"
+    assert env["MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH"] == "on"
+    assert "LINEAR_API_KEY" not in env
+    assert "MOTION_FACTORY_GATE_B_LINEAR_READ_OAUTH_CLIENT_SECRET" not in env
+    assert "OMNIGENT_FACTORY_SECRET" not in env
+    assert "MOTION_BROKER_URL" not in env
+    assert "MOTION_FACTORY_GATE_B_BROKER_URL" not in env
+
+
+@pytest.mark.parametrize(
+    "comment_id",
+    [
+        "00000000-0000-0000-0000-000000000000",
+        "550e8400e29b41d4a716446655440000",
+        "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+    ],
+)
+def test_start_rejects_noncanonical_gate_b_comment_id_before_cli(
+    tmp_path: Path, comment_id: str
+) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    approvals = tmp_path / "approvals"
+    _write_approval(approvals, _ORDER_ID, _approval())
+    _install_fake_cli(core_root)
+    node_dir = _fake_node_dir(tmp_path)
+
+    def _forbid_cli(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("CLI must not run when gate-b-comment-id is invalid")
+
+    with pytest.raises(ValueError, match="gate-b-comment-id must be a UUID"):
+        start_motion_order(
+            _ORDER_ID,
+            _start_env(
+                core_root=core_root,
+                orders_root=orders_root,
+                approvals_dir=approvals,
+                path=str(node_dir),
+            ),
+            gate_b_comment_id=comment_id,
+            subprocess_runner=_forbid_cli,
+        )
+
+
+def test_start_rejects_invalid_gate_b_comment_id_before_cli(tmp_path: Path) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    approvals = tmp_path / "approvals"
+    _write_approval(approvals, _ORDER_ID, _approval())
+    _install_fake_cli(core_root)
+    node_dir = _fake_node_dir(tmp_path)
+
+    def _forbid_cli(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("CLI must not run when gate-b-comment-id is invalid")
+
+    with pytest.raises(ValueError, match="gate-b-comment-id must be a UUID"):
+        start_motion_order(
+            _ORDER_ID,
+            _start_env(
+                core_root=core_root,
+                orders_root=orders_root,
+                approvals_dir=approvals,
+                path=str(node_dir),
+            ),
+            gate_b_comment_id="not-a-uuid",
+            subprocess_runner=_forbid_cli,
+        )
 
 
 def test_start_nonzero_exit_truthful(tmp_path: Path) -> None:
