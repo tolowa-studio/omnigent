@@ -20,9 +20,11 @@ MOTION_CORE_ROOT_ENV = "OMNIGENT_FACTORY_MOTION_CORE_ROOT"
 MOTION_ORDERS_ROOT_ENV = "OMNIGENT_FACTORY_MOTION_ORDERS_ROOT"
 
 _MOTION_ORDER_ID_MAX_LEN = 128
-_MOTION_ORDER_ID_RE = re.compile(
+# Simple slugs and Motion Core IDs with an uppercase timestamp T.
+_MOTION_ORDER_ID_SIMPLE_RE = re.compile(
     rf"^[a-z0-9](?:[a-z0-9-]{{0,{_MOTION_ORDER_ID_MAX_LEN - 2}}}[a-z0-9])?$"
 )
+_MOTION_ORDER_ID_FACTORY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}T\d{6}-[a-f0-9]{8}$")
 
 _STATUS_TOKEN_MAX_LEN = 64
 _STATUS_TOKEN_RE = re.compile(
@@ -42,11 +44,24 @@ MotionOrderSubprocessRunner = Callable[
 
 
 def validate_motion_order_id(order_id: str) -> None:
-    if not _MOTION_ORDER_ID_RE.fullmatch(order_id):
+    if not order_id or len(order_id) > _MOTION_ORDER_ID_MAX_LEN:
         raise ValueError(
-            "order_id must be a single lowercase alphanumeric/hyphen token "
+            "order_id must be a single Motion factory order id token "
             f"(max {_MOTION_ORDER_ID_MAX_LEN} chars; no whitespace or path separators)"
         )
+    if any(ch in order_id for ch in "/\\\r\n\t "):
+        raise ValueError(
+            "order_id must be a single Motion factory order id token "
+            f"(max {_MOTION_ORDER_ID_MAX_LEN} chars; no whitespace or path separators)"
+        )
+    if _MOTION_ORDER_ID_FACTORY_RE.fullmatch(order_id):
+        return
+    if _MOTION_ORDER_ID_SIMPLE_RE.fullmatch(order_id):
+        return
+    raise ValueError(
+        "order_id must be a single Motion factory order id token "
+        f"(max {_MOTION_ORDER_ID_MAX_LEN} chars; no whitespace or path separators)"
+    )
 
 
 def motion_order_pins_configured(environ: dict[str, str] | None = None) -> bool:
