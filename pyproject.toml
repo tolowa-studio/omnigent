@@ -453,7 +453,7 @@ include-package-data = true
 where = ["."]
 # Discovers the `omnigent` package (including `omnigent.inner.*` and
 # all omnigent subpackages absorbed during unification).
-include = ["omnigent*"]
+include = ["omnigent*", "dev", "dev.factory*"]
 
 [tool.setuptools.package-data]
 "omnigent.db" = ["alembic.ini"]

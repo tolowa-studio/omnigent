@@ -251,6 +251,8 @@ class ExecutorAdapter(HarnessApp):
                 extra["reasoning_effort"] = effort
         if request.max_output_tokens is not None:
             extra["max_tokens"] = int(request.max_output_tokens)
+        if ctx.session_id:
+            extra["omnigent_session_id"] = ctx.session_id
         # model_override is the per-request override; takes precedence over the spec default.
         config = ExecutorConfig(model=request.model_override, extra=extra)
         tools = _normalize_tool_schemas(request.tools or [])
@@ -296,7 +298,8 @@ class ExecutorAdapter(HarnessApp):
             set_active_skill,
         )
 
-        turn_session_id = ctx.session_id or current_session_id() or self._session_key
+        conversation_session_id = ctx.session_id or current_session_id()
+        turn_session_id = conversation_session_id or self._session_key
         if tracing and self._tracing_ctx is None:
             self._tracing_ctx = TracingContext(session_id=turn_session_id)
         tctx = self._tracing_ctx if tracing else None
@@ -328,7 +331,7 @@ class ExecutorAdapter(HarnessApp):
                 except Exception:
                     _logger.debug("trace_context_for_response unavailable", exc_info=True)
             with (
-                session_scope(turn_session_id),
+                session_scope(conversation_session_id),
                 phase_scope(ErrorPhase.TURN),
                 trace_cm,
                 input_delivery_scope(input_identity, response_id=ctx.response_id),

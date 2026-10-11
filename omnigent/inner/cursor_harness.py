@@ -133,6 +133,12 @@ def _build_cursor_executor() -> Executor:
 
     :raises ImportError: If the ``cursor-sdk`` package isn't installed.
     """
+    from omnigent.factory.gate_a.admission import factory_gate_a_enabled
+
+    if factory_gate_a_enabled():
+        raise RuntimeError(
+            "factory Gate A env gates are enabled; use harness factory-gate-a, not cursor SDK"
+        )
     bundle_dir_raw = os.environ.get(_ENV_BUNDLE_DIR, "").strip()
     bundle_dir = Path(bundle_dir_raw) if bundle_dir_raw else None
     return CursorExecutor(

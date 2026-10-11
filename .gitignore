@@ -101,3 +101,10 @@ deploy/databricks/.databricks/
 web/package-lock.json
 # Generated demo recordings belong in PR evidence or artifacts, not Git.
 recordings/
+
+# Gate A SDK trial runtime evidence (verdict JSON, event JSONL, positive copies).
+dev/factory/gate_a_sdk_trial/evidence/
+
+# Gate A Cursor CLI trial runtime (private config dir, stream-json, transcripts).
+dev/factory/gate_a_trial/.cursor-config/
+dev/factory/gate_a_trial/transcripts/

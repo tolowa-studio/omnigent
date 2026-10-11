@@ -2327,6 +2327,9 @@ def _run_headless_prompt(
         # ``session.status: failed`` (no response.failed is emitted).
         # Surface it the same way as a response.error event so headless
         # ``-p`` exits non-zero with the real message.
+        emitted = getattr(exc, "emitted_text", None)
+        if isinstance(emitted, str) and emitted:
+            print(emitted)
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
@@ -2462,7 +2465,14 @@ async def _query_sessions_once(
     except ClientOmnigentError:
         reconciled = await _persisted_turn_text(client, bound.id)
         if reconciled is not None:
-            return reconciled
+            await chat.refresh()
+            return await _finish_headless_turn_text(
+                client,
+                bound.id,
+                reconciled,
+                check_persisted_error=False,
+                session_status=chat.status,
+            )
         raise
     except TimeoutError:
         # The guard tripping does NOT mean the turn is over: a healthy
@@ -2489,7 +2499,14 @@ async def _query_sessions_once(
                     await chat.await_turn(timeout=_PER_TURN_TIMEOUT_S)
         reconciled = await _persisted_turn_text(client, bound.id)
         if reconciled is not None:
-            return reconciled
+            await chat.refresh()
+            return await _finish_headless_turn_text(
+                client,
+                bound.id,
+                reconciled,
+                check_persisted_error=False,
+                session_status=chat.status,
+            )
         raise RuntimeError(
             f"Turn did not complete within {_PER_TURN_TIMEOUT_S:.0f}s and no "
             "persisted assistant text was found to reconcile against "
@@ -2581,14 +2598,28 @@ async def _query_sessions_once(
         )
 
     if all_text_parts:
-        return "\n\n".join(p for p in all_text_parts if p)
+        await chat.refresh()
+        return await _finish_headless_turn_text(
+            client,
+            bound.id,
+            "\n\n".join(p for p in all_text_parts if p),
+            check_persisted_error=False,
+            session_status=chat.status,
+        )
     # An auto-woken turn can finish between live-stream subscriptions.
     # Recheck its durable output once the session has stopped running.
     if chat.status not in ("running", "launching"):
         reconciled = await _persisted_turn_text(client, bound.id)
         if reconciled is not None:
             logger.info("Recovered headless output from completed session %s", bound.id)
-            return reconciled
+            await chat.refresh()
+            return await _finish_headless_turn_text(
+                client,
+                bound.id,
+                reconciled,
+                check_persisted_error=False,
+                session_status=chat.status,
+            )
     # No assistant text at all. If the runner persisted a terminal
     # ``error`` item (e.g. a harness start failure like the cursor SDK's
     # invalid-model rejection), surface it instead of returning ``None`` —
@@ -2646,6 +2677,44 @@ def _response_output_text(output: _ResponseOutput) -> str | None:
                 if isinstance(text, str):
                     parts.append(text)
     return "".join(parts) if parts else None
+
+
+async def _finish_headless_turn_text(
+    client: OmnigentClient,
+    session_id: str,
+    text: str,
+    *,
+    check_persisted_error: bool,
+    session_status: str,
+) -> str:
+    """
+    Return headless ``-p`` output after checking for a terminal error item.
+
+    A turn can stream assistant text and still persist a terminal ``error``
+    item (e.g. ``ExecutorError`` after a summary line). The live subscription
+    may return that text without raising, so reconcile against the durable
+    error item before treating the turn as success. On failure, attach the
+    already-collected text on the exception so callers can print it before
+    exiting non-zero.
+
+    :param client: Connected SDK client.
+    :param session_id: Session id for transcript reads.
+    :param text: Assistant text collected for this turn.
+    :param check_persisted_error: When ``True``, always read the transcript
+        for a terminal error (failure-reconcile paths). When ``False``, read
+        only when ``session_status`` is ``failed`` so the happy path avoids
+        an extra items round-trip.
+    :param session_status: Latest session status from ``SessionsChat``.
+    :returns: ``text`` when no terminal error is recorded for this turn.
+    :raises ClientOmnigentError: When this turn persisted a terminal error.
+    """
+    if check_persisted_error or session_status == "failed":
+        turn_error = await _persisted_turn_error(client, session_id)
+        if turn_error is not None:
+            exc = ClientOmnigentError(turn_error)
+            exc.emitted_text = text  # type: ignore[attr-defined]
+            raise exc
+    return text
 
 
 async def _persisted_turn_text(
@@ -4233,6 +4302,9 @@ def _run_one_shot(
         # raises as an OmnigentError. Surface its message as a clean
         # CLI error instead of an opaque traceback so ``-p`` users see
         # why the turn produced no output.
+        emitted = getattr(exc, "emitted_text", None)
+        if isinstance(emitted, str) and emitted:
+            click.echo(emitted)
         raise click.ClickException(str(exc)) from exc
 
 

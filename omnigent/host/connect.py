@@ -723,6 +723,14 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         # Keep host and spawned-runner routing decisions aligned when the
         # host-slice-key kill switch is explicitly disabled.
         "OMNIGENT_HOST_SLICE_KEY_ENABLED",
+        # factory-gate-a-real opt-in (flags + path selectors only). Remote
+        # ``--server`` daemons do not inherit the local ``OMNIGENT_`` prefix,
+        # so these must be exact names on both the CLI→daemon and daemon→runner
+        # allowlist hops or the harness never registers.
+        "OMNIGENT_FACTORY_GATE_A_REAL_TASK",
+        "OMNIGENT_FACTORY_GATE_A_REAL_CHAT",
+        "OMNIGENT_FACTORY_GATE_A_REAL_SPEC_DIR",
+        "OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT",
     }
     # Windows system / profile constants (SYSTEMROOT is mandatory for Winsock,
     # USERPROFILE for Path.home(), etc.); a no-op on POSIX. See _platform.

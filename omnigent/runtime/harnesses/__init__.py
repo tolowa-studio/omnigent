@@ -24,6 +24,9 @@ sibling modules; this ``__init__.py`` is just the registry.
 
 from __future__ import annotations
 
+from dev.factory.order_scoped.binding import STAGE_WORKER_ENV
+from omnigent.factory.gate_a.admission import FACTORY_GATE_A_CURSOR_CLI_ENV, factory_gate_a_enabled
+from omnigent.factory.gate_a.real_chat import factory_gate_a_real_enabled
 from omnigent.harness_plugins import harness_modules
 
 # Harness-name -> fully-qualified module path, sourced from the harness
@@ -37,4 +40,12 @@ from omnigent.harness_plugins import harness_modules
 # community plugins from the dynamic registry.
 _HARNESS_MODULES = harness_modules()
 
-__all__ = ["_HARNESS_MODULES"]
+_FACTORY_GATE_A_MODULE = "omnigent.inner.factory_gate_a_harness"
+if factory_gate_a_enabled():
+    _HARNESS_MODULES.setdefault("factory-gate-a", _FACTORY_GATE_A_MODULE)
+
+_FACTORY_GATE_A_REAL_MODULE = "omnigent.inner.factory_gate_a_real_harness"
+if factory_gate_a_real_enabled():
+    _HARNESS_MODULES.setdefault("factory-gate-a-real", _FACTORY_GATE_A_REAL_MODULE)
+
+__all__ = ["FACTORY_GATE_A_CURSOR_CLI_ENV", "STAGE_WORKER_ENV", "_HARNESS_MODULES"]
