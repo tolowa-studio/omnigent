@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,11 @@ _STATUS_TOKEN_MAX_LEN = 64
 _STATUS_TOKEN_RE = re.compile(
     rf"^[a-zA-Z0-9](?:[a-zA-Z0-9._-]{{0,{_STATUS_TOKEN_MAX_LEN - 2}}}[a-zA-Z0-9._-])?$"
 )
+
+_STRUCTURED_SUBMIT_SCHEMA_ID = "motion.order.structured-submit.v2"
+_LINEAR_ISSUE_RE = re.compile(r"^TOL-[1-9][0-9]*$")
+_BRIEF_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
+_BASE_SHA_RE = re.compile(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
 
 _CLI_REL = Path("bin") / "motion-order.mjs"
 _SUBPROCESS_TIMEOUT_S = 15.0
@@ -209,6 +215,86 @@ def _parse_motion_core_report(report: object, *, requested_order_id: str) -> tup
     return report_ok, unavailable_count, mismatch_count
 
 
+@dataclass(frozen=True)
+class StructuredOrderBindings:
+    """Validated non-secret bindings from a structured v2 Motion Core order.
+
+    ``bound_linear_issue`` is set only when Core persisted a bound issue matching the
+    requested one; ``requested_linear_issue`` is the optional structured submit value.
+    """
+
+    bound_linear_issue: str | None
+    requested_linear_issue: str | None
+    base_sha: str
+    brief_hash: str
+
+
+def _require_pattern(value: object, pattern: re.Pattern[str], label: str) -> str:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise ValueError(f"Motion Core status {label} is missing or malformed")
+    return value
+
+
+def _parse_structured_submit_bindings(order: dict[str, Any]) -> StructuredOrderBindings | None:
+    structured = order.get("structured_submit")
+    if structured is None:
+        return None
+    if not isinstance(structured, dict):
+        raise ValueError("Motion Core status order.structured_submit must be an object")
+    if structured.get("schema_id") != _STRUCTURED_SUBMIT_SCHEMA_ID:
+        raise ValueError("Motion Core status order.structured_submit schema mismatch")
+    raw_requested = structured.get("linear_issue")
+    requested_issue = (
+        _require_pattern(raw_requested, _LINEAR_ISSUE_RE, "order.structured_submit.linear_issue")
+        if raw_requested is not None
+        else None
+    )
+    bound = order.get("bound_linear_issue")
+    bound_issue: str | None = None
+    if bound is not None:
+        if not isinstance(bound, dict):
+            raise ValueError("Motion Core status order.bound_linear_issue must be an object")
+        bound_issue = _require_pattern(
+            bound.get("identifier"),
+            _LINEAR_ISSUE_RE,
+            "order.bound_linear_issue.identifier",
+        )
+        if requested_issue is None:
+            raise ValueError(
+                "Motion Core status order.bound_linear_issue is present without "
+                "structured_submit.linear_issue"
+            )
+        if bound_issue != requested_issue:
+            raise ValueError(
+                "Motion Core status order.bound_linear_issue does not match "
+                "structured_submit.linear_issue"
+            )
+    brief_hash = _require_pattern(order.get("brief_hash"), _BRIEF_HASH_RE, "order.brief_hash")
+    structured_brief_hash = _require_pattern(
+        structured.get("brief_hash"),
+        _BRIEF_HASH_RE,
+        "order.structured_submit.brief_hash",
+    )
+    if brief_hash != structured_brief_hash:
+        raise ValueError(
+            "Motion Core status order.brief_hash does not match structured_submit.brief_hash"
+        )
+    policy = structured.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("Motion Core status order.structured_submit.policy must be an object")
+    base_sha = _require_pattern(
+        policy.get("base_sha"),
+        _BASE_SHA_RE,
+        "order.structured_submit.policy.base_sha",
+    )
+    return StructuredOrderBindings(
+        bound_linear_issue=bound_issue,
+        requested_linear_issue=requested_issue,
+        base_sha=base_sha,
+        brief_hash=brief_hash,
+    )
+
+
 def format_motion_order_safe_summary(
     *,
     order_id: str,
@@ -218,6 +304,7 @@ def format_motion_order_safe_summary(
     report_ok: bool,
     report_unavailable_count: int,
     report_mismatch_count: int,
+    structured_bindings: StructuredOrderBindings | None = None,
 ) -> str:
     phase_display = cancellation_phase if cancellation_phase else "(none)"
     lines = [
@@ -229,8 +316,19 @@ def format_motion_order_safe_summary(
         f"state: {state}",
         f"cancellation_phase: {phase_display}",
         f"receipt_category_count: {receipt_category_count}",
-        "note: snapshot from Motion Core order status (not live worker state)",
     ]
+    if structured_bindings is not None:
+        if structured_bindings.bound_linear_issue is not None:
+            lines.append(f"bound_linear_issue: {structured_bindings.bound_linear_issue}")
+        elif structured_bindings.requested_linear_issue is not None:
+            lines.append(f"requested_linear_issue: {structured_bindings.requested_linear_issue}")
+        lines.extend(
+            [
+                f"base_sha: {structured_bindings.base_sha}",
+                f"brief_hash: {structured_bindings.brief_hash}",
+            ]
+        )
+    lines.append("note: snapshot from Motion Core order status (not live worker state)")
     return "\n".join(lines) + "\n"
 
 
@@ -261,6 +359,7 @@ def _parse_motion_order_json(stdout: str, *, requested_order_id: str) -> str:
         if raw_phase is not None
         else None
     )
+    structured_bindings = _parse_structured_submit_bindings(order)
     receipt_category_count = _receipt_category_count(payload.get("receipts"))
     report_ok, report_unavailable_count, report_mismatch_count = _parse_motion_core_report(
         payload.get("report"),
@@ -274,6 +373,7 @@ def _parse_motion_order_json(stdout: str, *, requested_order_id: str) -> str:
         report_ok=report_ok,
         report_unavailable_count=report_unavailable_count,
         report_mismatch_count=report_mismatch_count,
+        structured_bindings=structured_bindings,
     )
 
 

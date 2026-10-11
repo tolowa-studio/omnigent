@@ -76,6 +76,23 @@ completed without unavailable or mismatched sections. This is a snapshot from
 Core, not live worker state. It does not write to Motion Core, Linear, or the
 order directory.
 
+For structured v2 orders (Core `order.structured_submit` present), the summary
+also shows the Gate B approval bindings `base_sha` (40 or 64 lowercase hex,
+from `structured_submit.policy.base_sha`) and `brief_hash` (64 lowercase hex,
+matching `structured_submit.brief_hash`). The Linear issue line depends on what
+Core persisted:
+
+- `bound_linear_issue: TOL-<n>` only when Core's `order.bound_linear_issue`
+  object is present and its `identifier` equals `structured_submit.linear_issue`.
+- `requested_linear_issue: TOL-<n>` when the optional
+  `structured_submit.linear_issue` is set but Core has not bound it yet.
+- No issue line when the optional `linear_issue` is absent or null.
+
+A bound issue without a requested issue, a bound/requested mismatch, or any
+missing or malformed required binding fails the status read without echoing
+the bad values. Legacy orders without `structured_submit` omit these lines. The
+bindings do not indicate worker completion.
+
 ```bash
 export OMNIGENT_FACTORY_MOTION_CORE_ROOT=/absolute/path/to/motion-core
 export OMNIGENT_FACTORY_MOTION_ORDERS_ROOT=/absolute/path/to/orders
