@@ -1513,12 +1513,11 @@ def test_review_mcp_preflight_failure_after_freeze_allows_review_only_resume(
     assert prior.get("builder_session_ids") == ["build-session"]
     assert prior.get("verify_exit_code") == 0
     assert prior.get("deliverable_manifest_sha256")
-    assert prior.get("freeze_manifest_sha256") == hashlib.sha256(
-        (artifacts / "freeze" / "manifest.json").read_bytes()
-    ).hexdigest()
-    builder_log_sha = hashlib.sha256(
-        (artifacts / "builder.stdout.txt").read_bytes()
-    ).hexdigest()
+    assert (
+        prior.get("freeze_manifest_sha256")
+        == hashlib.sha256((artifacts / "freeze" / "manifest.json").read_bytes()).hexdigest()
+    )
+    builder_log_sha = hashlib.sha256((artifacts / "builder.stdout.txt").read_bytes()).hexdigest()
     assert prior.get("builder_stdout_sha256") == builder_log_sha
     assert validate_review_only_resume(spec, artifacts, prior) == []
 
@@ -1564,9 +1563,7 @@ def test_review_setup_failure_after_freeze_allows_review_only_resume(
             raise OSError("injected review config materialize failure")
         return real_review_materialize(target)
 
-    def flaky_validate_review_hashes(
-        spec_obj: object, observed: dict[str, str]
-    ) -> list[str]:
+    def flaky_validate_review_hashes(spec_obj: object, observed: dict[str, str]) -> list[str]:
         nonlocal fail_review_hash_gate_once
         if fail_review_hash_gate_once:
             fail_review_hash_gate_once = False
@@ -1651,17 +1648,16 @@ def test_review_setup_failure_after_freeze_allows_review_only_resume(
     assert builder_capture_calls == 1
     assert (artifacts / "freeze" / "manifest.json").is_file()
     assert (artifacts / "review.profile.json").is_file()
-    recorded_review = json.loads(
-        (artifacts / "review.profile.json").read_text(encoding="utf-8")
-    )
+    recorded_review = json.loads((artifacts / "review.profile.json").read_text(encoding="utf-8"))
     assert recorded_review == spec.review_config_hashes
 
     prior = load_resume_state(artifacts / "resume_state.json")
     assert prior is not None
     assert prior.get("builder_ok") is True
-    assert prior.get("freeze_manifest_sha256") == hashlib.sha256(
-        (artifacts / "freeze" / "manifest.json").read_bytes()
-    ).hexdigest()
+    assert (
+        prior.get("freeze_manifest_sha256")
+        == hashlib.sha256((artifacts / "freeze" / "manifest.json").read_bytes()).hexdigest()
+    )
     assert validate_review_only_resume(spec, artifacts, prior) == []
 
     second = run_real_task_gate(
