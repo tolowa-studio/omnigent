@@ -29,7 +29,7 @@ from dev.factory.gate_a_real.profile import (
     trusted_cursor_vendor_binary,
     trusted_motion_cursor_gcloud_config,
 )
-from dev.factory.gate_a_real.receipt import validate_review_only_resume
+from dev.factory.gate_a_real.receipt import load_resume_state, validate_review_only_resume
 from dev.factory.gate_a_real.spec import (
     RealTaskSpecError,
     canonical_spec_sha256,
@@ -1405,6 +1405,272 @@ def test_verify_failure_skips_review(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert review_calls == 0
     assert not result.receipt.ok
     assert (artifacts / "review-attempts").exists() is False
+
+
+def test_review_mcp_preflight_failure_after_freeze_allows_review_only_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-freeze reviewer MCP failure must persist a review-only checkpoint."""
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "out.txt").write_text("ok", encoding="utf-8")
+    spec = load_real_task_spec(_write_spec(tmp_path, workspace))
+    artifacts = tmp_path / "artifacts"
+    mcp_calls = 0
+    builder_capture_calls = 0
+    fail_review_mcp_preflight = True
+
+    from dev.factory.gate_a_real.agent_run import AgentRunCapture
+
+    def fake_capture(
+        argv: list[str],
+        *,
+        cwd: str,
+        env: dict[str, str],
+        timeout_seconds: float,
+        sandbox_argv_wrapper: list[str] | None = None,
+        stdout_log: Path | None = None,
+        stderr_log: Path | None = None,
+    ) -> AgentRunCapture:
+        del cwd, env, timeout_seconds, sandbox_argv_wrapper
+        is_review = "--mode" in argv and "ask" in argv
+        if not is_review:
+            nonlocal builder_capture_calls
+            builder_capture_calls += 1
+        stdout = (
+            _review_pass_stream()
+            if is_review
+            else (
+                json.dumps({"type": "system", "session_id": "build-session"})
+                + "\n"
+                + json.dumps(
+                    {"type": "result", "subtype": "success", "is_error": False, "result": "done"}
+                )
+            )
+        )
+        assert stdout_log is not None and stderr_log is not None
+        stdout_log.write_text(stdout, encoding="utf-8")
+        stderr_log.write_text("", encoding="utf-8")
+        stdout_sha = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+        session = ("review-session",) if is_review else ("build-session",)
+        return AgentRunCapture(
+            argv=argv,
+            exit_code=0,
+            stdout=stdout,
+            stderr="",
+            session_ids=session,
+            timed_out=False,
+            api_key_inherited=False,
+            unexpected_mcp_activity=False,
+            stdout_log_path=str(stdout_log),
+            stderr_log_path=str(stderr_log),
+            stdout_sha256=stdout_sha,
+            stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        )
+
+    def fake_mcp(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal mcp_calls
+        mcp_calls += 1
+        if fail_review_mcp_preflight and mcp_calls == 2:
+            return {
+                "gate_passed": False,
+                "gate_failure_reasons": ["review MCP preflight failed (injected)"],
+            }
+        return {"gate_passed": True, "gate_failure_reasons": []}
+
+    class _FakeSandbox:
+        def wrap_argv(self, argv: list[str]) -> list[str]:
+            return argv
+
+        def cleanup(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.prepare_gate_a_cursor_cli_sandbox",
+        lambda _home: _FakeSandbox(),
+    )
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.discover_and_assert_zero_mcp_servers",
+        fake_mcp,
+    )
+    monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
+    _patch_real_task_cursor_pins(monkeypatch)
+
+    first = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
+    assert not first.receipt.ok
+    assert builder_capture_calls == 1
+    assert mcp_calls == 2
+    assert (artifacts / "freeze" / "manifest.json").is_file()
+    assert (artifacts / "review.profile.json").is_file()
+
+    prior = load_resume_state(artifacts / "resume_state.json")
+    assert prior is not None
+    assert prior.get("builder_ok") is True
+    assert prior.get("spec_sha256") == spec.spec_sha256
+    assert prior.get("workspace") == str(spec.workspace)
+    assert prior.get("builder_exit_code") == 0
+    assert prior.get("builder_session_ids") == ["build-session"]
+    assert prior.get("verify_exit_code") == 0
+    assert prior.get("deliverable_manifest_sha256")
+    assert prior.get("freeze_manifest_sha256") == hashlib.sha256(
+        (artifacts / "freeze" / "manifest.json").read_bytes()
+    ).hexdigest()
+    builder_log_sha = hashlib.sha256(
+        (artifacts / "builder.stdout.txt").read_bytes()
+    ).hexdigest()
+    assert prior.get("builder_stdout_sha256") == builder_log_sha
+    assert validate_review_only_resume(spec, artifacts, prior) == []
+
+    mcp_calls = 0
+    fail_review_mcp_preflight = False
+
+    second = run_real_task_gate(
+        spec,
+        RealTaskRunOptions(artifacts_dir=artifacts, review_only=True),
+    )
+    assert second.receipt.ok
+    assert builder_capture_calls == 1
+    assert mcp_calls == 2
+    assert (artifacts / "review-attempts" / "0001" / "meta.json").is_file()
+
+
+@pytest.mark.parametrize("failure_mode", ["materialize", "hash_gate"])
+def test_review_setup_failure_after_freeze_allows_review_only_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_mode: str
+) -> None:
+    """Post-freeze reviewer setup failure must leave a validator-complete checkpoint."""
+    monkeypatch.setenv(REAL_TASK_ENV, "1")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "out.txt").write_text("ok", encoding="utf-8")
+    spec = load_real_task_spec(_write_spec(tmp_path, workspace))
+    artifacts = tmp_path / "artifacts"
+    builder_capture_calls = 0
+    real_review_materialize = materialize_real_task_review_config_dir
+    review_materialize_calls = 0
+    fail_review_materialize_once = failure_mode == "materialize"
+    fail_review_hash_gate_once = failure_mode == "hash_gate"
+
+    from dev.factory.gate_a_real import orchestration
+    from dev.factory.gate_a_real.agent_run import AgentRunCapture
+
+    real_validate_review_hashes = orchestration._validate_review_config_hashes
+
+    def tracking_review_materialize(target: Path) -> dict[str, object]:
+        nonlocal review_materialize_calls
+        review_materialize_calls += 1
+        if fail_review_materialize_once and review_materialize_calls == 1:
+            raise OSError("injected review config materialize failure")
+        return real_review_materialize(target)
+
+    def flaky_validate_review_hashes(
+        spec_obj: object, observed: dict[str, str]
+    ) -> list[str]:
+        nonlocal fail_review_hash_gate_once
+        if fail_review_hash_gate_once:
+            fail_review_hash_gate_once = False
+            return ["injected review config hash drift for test"]
+        return real_validate_review_hashes(spec_obj, observed)
+
+    def fake_capture(
+        argv: list[str],
+        *,
+        cwd: str,
+        env: dict[str, str],
+        timeout_seconds: float,
+        sandbox_argv_wrapper: list[str] | None = None,
+        stdout_log: Path | None = None,
+        stderr_log: Path | None = None,
+    ) -> AgentRunCapture:
+        del cwd, env, timeout_seconds, sandbox_argv_wrapper
+        is_review = "--mode" in argv and "ask" in argv
+        if not is_review:
+            nonlocal builder_capture_calls
+            builder_capture_calls += 1
+        stdout = (
+            _review_pass_stream()
+            if is_review
+            else (
+                json.dumps({"type": "system", "session_id": "build-session"})
+                + "\n"
+                + json.dumps(
+                    {"type": "result", "subtype": "success", "is_error": False, "result": "done"}
+                )
+            )
+        )
+        assert stdout_log is not None and stderr_log is not None
+        stdout_log.write_text(stdout, encoding="utf-8")
+        stderr_log.write_text("", encoding="utf-8")
+        stdout_sha = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+        session = ("review-session",) if is_review else ("build-session",)
+        return AgentRunCapture(
+            argv=argv,
+            exit_code=0,
+            stdout=stdout,
+            stderr="",
+            session_ids=session,
+            timed_out=False,
+            api_key_inherited=False,
+            unexpected_mcp_activity=False,
+            stdout_log_path=str(stdout_log),
+            stderr_log_path=str(stderr_log),
+            stdout_sha256=stdout_sha,
+            stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        )
+
+    class _FakeSandbox:
+        def wrap_argv(self, argv: list[str]) -> list[str]:
+            return argv
+
+        def cleanup(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.prepare_gate_a_cursor_cli_sandbox",
+        lambda _home: _FakeSandbox(),
+    )
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.discover_and_assert_zero_mcp_servers",
+        lambda *a, **k: {"gate_passed": True, "gate_failure_reasons": []},
+    )
+    monkeypatch.setattr("dev.factory.gate_a_real.orchestration.run_agent_capture", fake_capture)
+    monkeypatch.setattr(
+        "dev.factory.gate_a_real.orchestration.materialize_real_task_review_config_dir",
+        tracking_review_materialize,
+    )
+    if failure_mode == "hash_gate":
+        monkeypatch.setattr(
+            "dev.factory.gate_a_real.orchestration._validate_review_config_hashes",
+            flaky_validate_review_hashes,
+        )
+    _patch_real_task_cursor_pins(monkeypatch)
+
+    first = run_real_task_gate(spec, RealTaskRunOptions(artifacts_dir=artifacts))
+    assert not first.receipt.ok
+    assert builder_capture_calls == 1
+    assert (artifacts / "freeze" / "manifest.json").is_file()
+    assert (artifacts / "review.profile.json").is_file()
+    recorded_review = json.loads(
+        (artifacts / "review.profile.json").read_text(encoding="utf-8")
+    )
+    assert recorded_review == spec.review_config_hashes
+
+    prior = load_resume_state(artifacts / "resume_state.json")
+    assert prior is not None
+    assert prior.get("builder_ok") is True
+    assert prior.get("freeze_manifest_sha256") == hashlib.sha256(
+        (artifacts / "freeze" / "manifest.json").read_bytes()
+    ).hexdigest()
+    assert validate_review_only_resume(spec, artifacts, prior) == []
+
+    second = run_real_task_gate(
+        spec,
+        RealTaskRunOptions(artifacts_dir=artifacts, review_only=True),
+    )
+    assert second.receipt.ok
+    assert builder_capture_calls == 1
+    assert (artifacts / "review-attempts" / "0001" / "meta.json").is_file()
 
 
 def test_review_only_without_builder_state_fails(
