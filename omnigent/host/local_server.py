@@ -44,15 +44,13 @@ _logger = logging.getLogger(__name__)
 _LOCAL_SERVER_READY_TIMEOUT_SECONDS = 45.0
 
 # Hard cap on waiting for a server that outlived the ready timeout with its
-# process still alive. A first boot (cold imports + DB migrations) has taken
-# ~40s in the wild; adopting a slow boot beats failing a server that is
-# seconds from healthy — and then leaking it.
-_LOCAL_SERVER_BOOT_CEILING_SECONDS = 120.0
+# process still alive. Cold imports and startup work on slower hosts can take
+# longer than two minutes; keep the child tracked long enough to become ready.
+_LOCAL_SERVER_BOOT_CEILING_SECONDS = 300.0
 
-# Max seconds to wait for a bind-race-doomed server child's natural
-# EADDRINUSE exit before the terminate backstop. Matches the readiness
-# budget, which a full child boot (cold imports + DB migrations + bind)
-# is known to fit inside.
+# Max seconds to wait for a bind-race-doomed server child to exit naturally
+# with EADDRINUSE before the terminate backstop. Keep this separate from the
+# slow-boot ceiling: a failed bind must not leave contention in place.
 _DOOMED_CHILD_EXIT_GRACE_S = _LOCAL_SERVER_READY_TIMEOUT_SECONDS
 
 

@@ -1428,6 +1428,62 @@ def test_wait_adopts_a_slow_boot_while_the_process_is_alive(
     assert calls["n"] == 3
 
 
+def test_wait_default_ceiling_adopts_a_boot_after_two_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The default wait must keep a slow-importing live child past 120s."""
+
+    class _Proc:
+        pid = 4321
+        terminated = False
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        def terminate(self) -> None:
+            type(self).terminated = True
+
+        @staticmethod
+        def wait(timeout: float | None = None) -> int:
+            del timeout
+            return 0
+
+    elapsed = 0.0
+    health_times: list[float] = []
+
+    def _monotonic() -> float:
+        return elapsed
+
+    def _sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    class _Resp:
+        status_code = 200
+
+    def _fake_get(url: str, *, timeout: float, trust_env: bool) -> _Resp:
+        del url, timeout, trust_env
+        health_times.append(elapsed)
+        if elapsed < 121.0:
+            raise httpx.ConnectError("still importing")
+        return _Resp()
+
+    monkeypatch.setattr(local_server.time, "monotonic", _monotonic)
+    monkeypatch.setattr(local_server.time, "sleep", _sleep)
+    monkeypatch.setattr("httpx.get", _fake_get)
+
+    local_server._wait_for_local_omnigent_server(
+        "http://127.0.0.1:8123", _Proc(), tmp_path / "server.log"
+    )
+
+    assert health_times[0] == 0.0
+    assert health_times[-1] >= 121.0
+    assert health_times[-1] < 300.0
+    assert _Proc.terminated is False
+
+
 def test_wait_stops_the_spawned_server_when_the_boot_ceiling_expires(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
