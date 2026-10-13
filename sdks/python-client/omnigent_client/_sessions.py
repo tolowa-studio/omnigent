@@ -144,6 +144,8 @@ class Session:
         when no labels have been written.
     :param runner_id: Runner currently bound to this session, e.g.
         ``"runner_abc123"``. ``None`` until the client binds one.
+    :param host_id: Host bound to this session, or ``None`` when
+        the session has no host affinity.
     :param reasoning_effort: Per-session reasoning-effort hint,
         e.g. ``"high"``. ``None`` means use the agent default.
     :param items: Committed conversation items in chronological
@@ -191,6 +193,7 @@ class Session:
     title: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
     runner_id: str | None = None
+    host_id: str | None = None
     reasoning_effort: str | None = None
     items: list[dict[str, Any]] = field(default_factory=list)
     llm_model: str | None = None
@@ -227,6 +230,7 @@ class Session:
             title=raw.get("title"),
             labels=labels_raw if isinstance(labels_raw, dict) else {},
             runner_id=raw.get("runner_id"),
+            host_id=raw.get("host_id"),
             reasoning_effort=raw.get("reasoning_effort"),
             items=items_raw if isinstance(items_raw, list) else [],
             llm_model=raw.get("llm_model"),

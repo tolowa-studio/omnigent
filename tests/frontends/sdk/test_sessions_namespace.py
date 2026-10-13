@@ -247,6 +247,27 @@ async def test_get_returns_typed_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_parses_host_id_from_session_snapshot() -> None:
+    """The typed snapshot preserves server host affinity for resume guards."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://srv/v1/sessions/conv_abc"
+        return httpx.Response(
+            200,
+            json=_session_response_body() | {"host_id": "host_m2"},
+        )
+
+    ns, client = _make_namespace(handler)
+    try:
+        session = await ns.get("conv_abc")
+    finally:
+        await client.aclose()
+
+    assert isinstance(session, Session)
+    assert session.host_id == "host_m2"
+
+
+@pytest.mark.asyncio
 async def test_get_updated_at_defaults_to_none_when_omitted() -> None:
     """Older session responses without ``updated_at`` remain parseable."""
 

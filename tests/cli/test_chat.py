@@ -12,6 +12,7 @@ import httpx
 import pytest
 from omnigent_client import OmnigentError as ClientOmnigentError
 from omnigent_client import QueryResult
+from omnigent_client._sessions import Session
 
 import omnigent.chat as chat_module
 from omnigent.chat import (
@@ -1387,6 +1388,19 @@ class _FakeSessionsApi:
         self._captured["fork"] = session_id
         return {"id": "conv_forked"}
 
+    async def get(self, session_id: str) -> Session:
+        """Return the saved host affinity for a resumed session."""
+        self._captured["get"] = session_id
+        return Session.from_dict(
+            {
+                "id": session_id,
+                "agent_id": "agent_test",
+                "status": "idle",
+                "created_at": 1,
+                "host_id": self._captured.get("session_host_id", "host_x"),
+            }
+        )
+
 
 class _FakeSdkClient:
     """Async-context-manager stand-in for ``OmnigentClient`` in prep tests.
@@ -1494,6 +1508,57 @@ def test_prepare_chat_session_via_daemon_resume_skips_create(
     launch = captured["launch"]
     assert isinstance(launch, dict)
     assert launch["session_id"] == "conv_resume"
+
+
+def test_prepare_chat_session_via_daemon_refuses_resume_on_different_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cross-host resume fails before starting or binding a local runner."""
+    captured: dict[str, object] = {"session_host_id": "host_m2"}
+    _patch_daemon_launch(monkeypatch, captured)
+
+    with pytest.raises(click.ClickException, match="bound to host host_m2"):
+        asyncio.run(
+            _prepare_chat_session_via_daemon(
+                base_url="https://example.databricksapps.com",
+                headers={},
+                auth=None,
+                host_id="host_laptop",
+                bundle=b"bundle-bytes",
+                resume_conversation_id="conv_remote",
+                fork_session_id=None,
+                workspace="/tmp/proj",
+            )
+        )
+
+    assert captured["get"] == "conv_remote"
+    assert "launch" not in captured
+    assert "bind" not in captured
+
+
+def test_prepare_chat_session_via_daemon_allows_hostless_import_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An imported session without host affinity can bind on first resume."""
+    captured: dict[str, object] = {"session_host_id": None}
+    _patch_daemon_launch(monkeypatch, captured)
+
+    prepared = asyncio.run(
+        _prepare_chat_session_via_daemon(
+            base_url="https://example.databricksapps.com",
+            headers={},
+            auth=None,
+            host_id="host_x",
+            bundle=b"bundle-bytes",
+            resume_conversation_id="conv_imported",
+            fork_session_id=None,
+            workspace="/tmp/proj",
+        )
+    )
+
+    assert prepared.session_id == "conv_imported"
+    assert "launch" in captured
+    assert "bind" in captured
 
 
 def test_prepare_chat_session_via_daemon_binds_runner_to_clear_stopped_marker(
