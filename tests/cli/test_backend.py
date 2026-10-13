@@ -2681,6 +2681,35 @@ def test_discover_local_server_url_returns_when_healthy(
     assert _discover_local_server_url(timeout=1.0) == "http://127.0.0.1:8123"
 
 
+def test_discover_default_wait_covers_two_slow_server_boots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First-call discovery allows a slow boot plus one contended-port retry."""
+    elapsed = 0.0
+    server_ready_at = (
+        2 * cli._LOCAL_SERVER_BOOT_CEILING_SECONDS + cli._DOOMED_CHILD_EXIT_GRACE_S + 5.0
+    )
+
+    def _monotonic() -> float:
+        return elapsed
+
+    def _sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    def _server_url() -> str | None:
+        return "http://127.0.0.1:8123" if elapsed >= server_ready_at else None
+
+    monkeypatch.setattr(cli.time, "monotonic", _monotonic)
+    monkeypatch.setattr(cli.time, "sleep", _sleep)
+    monkeypatch.setattr(cli, "local_server_url_if_healthy", _server_url)
+    monkeypatch.setattr(cli, "_host_daemon_alive", lambda: True)
+
+    assert _discover_local_server_url() == "http://127.0.0.1:8123"
+    assert elapsed >= server_ready_at
+    assert elapsed < cli._LOCAL_SERVER_DISCOVER_TIMEOUT_S
+
+
 def test_discover_local_server_url_raises_when_daemon_dead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

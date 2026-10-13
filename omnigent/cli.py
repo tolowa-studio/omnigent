@@ -80,6 +80,8 @@ from omnigent.host.daemon_lifecycle import (
 from omnigent.host.daemon_lifecycle import write_daemon_record as _write_daemon_record_impl
 from omnigent.host.local_server import (
     _DEFAULT_LOCAL_PORT,
+    _DOOMED_CHILD_EXIT_GRACE_S,
+    _LOCAL_SERVER_BOOT_CEILING_SECONDS,
     LocalServerStartupError,
     _pid_alive,
     consume_failed_server_log_tail,
@@ -3666,10 +3668,12 @@ def _host_daemon_alive() -> bool:
     return _pid_alive(existing.pid)
 
 
-# Generous because a port-contended spawn boots TWICE: the bind-race loser
-# runs to its natural EADDRINUSE exit (completing DB migrations) before the
-# free-port respawn cold-boots — see ensure_local_omnigent_server.
-_LOCAL_SERVER_DISCOVER_TIMEOUT_S = 120.0
+# A port-contended spawn can require two sequential server boots: the loser
+# waits to exit before the free-port retry starts. Allow both boot ceilings,
+# the doomed-child exit grace, and a small handoff margin.
+_LOCAL_SERVER_DISCOVER_TIMEOUT_S = (
+    2 * _LOCAL_SERVER_BOOT_CEILING_SECONDS + _DOOMED_CHILD_EXIT_GRACE_S + 20.0
+)
 
 
 def _ensure_databricks_server_auth(server: str, *, non_interactive: bool = False) -> None:
