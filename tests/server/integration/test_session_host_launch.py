@@ -77,6 +77,7 @@ from tests.server.helpers import websocket_scope as _websocket_scope
 pytestmark = pytest.mark.asyncio
 
 _HOST_ID = "c2d81b1a6812ae1cf32221c5a2a70ba0"
+_OTHER_HOST_ID = "e78f6317f0424be6a8e7b6e655aacb3d"
 _WORKSPACE = "/work/repo"
 _RUNNER_NOT_AVAILABLE = (
     "The runner for this session is not available — it may have failed to start. "
@@ -157,7 +158,12 @@ def app(runtime_init: None, db_uri: str, tmp_path) -> FastAPI:
     )
 
 
-async def _connect_host(app: FastAPI) -> ApplicationCommunicator:
+async def _connect_host(
+    app: FastAPI,
+    host_id: str = _HOST_ID,
+    *,
+    name: str = "laptop",
+) -> ApplicationCommunicator:
     """Connect a mock host over the WebSocket tunnel and wait for it
     to register in the app's host registry.
 
@@ -165,18 +171,18 @@ async def _connect_host(app: FastAPI) -> ApplicationCommunicator:
         is the same instance the session-create launch path reads).
     :returns: The connected ASGI communicator, ready to exchange frames.
     """
-    path = f"/v1/hosts/{_HOST_ID}/tunnel"
+    path = f"/v1/hosts/{host_id}/tunnel"
     comm = ApplicationCommunicator(app, _websocket_scope(path))
     await comm.send_input({"type": "websocket.connect"})
     accepted = await comm.receive_output(timeout=budget(1.0))
     assert accepted["type"] == "websocket.accept"
 
     hello = encode_host_frame(
-        HostHelloFrame(version="0.1.0-test", frame_protocol_version=1, name="laptop")
+        HostHelloFrame(version="0.1.0-test", frame_protocol_version=1, name=name)
     )
     await comm.send_input({"type": "websocket.receive", "text": hello})
     registry = app.state.host_registry
-    while registry.get(_HOST_ID) is None:
+    while registry.get(host_id) is None:
         await asyncio.sleep(0.01)
     return comm
 
@@ -1116,7 +1122,9 @@ async def test_inline_launch_rejects_bad_workspace(
 
 
 async def _inline_launch_session(
-    client: httpx.AsyncClient, comm: ApplicationCommunicator
+    client: httpx.AsyncClient,
+    comm: ApplicationCommunicator,
+    host_id: str = _HOST_ID,
 ) -> dict[str, str]:
     """Inline-launch a host-bound session and return its id + runner_id.
 
@@ -1133,11 +1141,61 @@ async def _inline_launch_session(
     launch_responder = asyncio.create_task(_serve_one_launch(comm, launch_status="launched"))
     create_resp = await client.post(
         "/v1/sessions",
-        json={"agent_id": agent["id"], "host_id": _HOST_ID, "workspace": _WORKSPACE},
+        json={"agent_id": agent["id"], "host_id": host_id, "workspace": _WORKSPACE},
     )
     await launch_responder
     assert create_resp.status_code == 201, create_resp.text
     return {"id": create_resp.json()["id"], "runner_id": create_resp.json()["runner_id"]}
+
+
+async def test_parented_create_on_different_host_launches_selected_host_and_default_still_inherits(
+    client: httpx.AsyncClient,
+    app: FastAPI,
+    db_uri: str,
+) -> None:
+    """Explicit placement launches elsewhere; an omitted host keeps co-location."""
+    parent_host = await _connect_host(app, _HOST_ID, name="parent-host")
+    target_host = await _connect_host(app, _OTHER_HOST_ID, name="target-host")
+    parent = await _inline_launch_session(client, parent_host, _HOST_ID)
+
+    agent = await create_test_agent(client)
+    target_responder = asyncio.create_task(
+        _serve_one_launch(target_host, launch_status="launched")
+    )
+    placed_response = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": agent["id"],
+            "parent_session_id": parent["id"],
+            "host_id": _OTHER_HOST_ID,
+            "workspace": _WORKSPACE,
+        },
+    )
+    target_launch = await target_responder
+    assert placed_response.status_code == 201, placed_response.text
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    placed = conv_store.get_conversation(placed_response.json()["id"])
+    assert placed is not None
+    assert target_launch.session_id == placed.id
+    assert placed.parent_conversation_id == parent["id"]
+    assert placed.host_id == _OTHER_HOST_ID
+    assert placed.runner_id == placed_response.json()["runner_id"]
+    assert placed.runner_id != parent["runner_id"]
+
+    default_response = await client.post(
+        "/v1/sessions",
+        json={"agent_id": agent["id"], "parent_session_id": parent["id"]},
+    )
+    assert default_response.status_code == 201, default_response.text
+    default_child = conv_store.get_conversation(default_response.json()["id"])
+    assert default_child is not None
+    assert default_child.parent_conversation_id == parent["id"]
+    assert default_child.runner_id == parent["runner_id"]
+    assert default_child.host_id is None
+
+    for comm in (target_host, parent_host):
+        await comm.send_input({"type": "websocket.disconnect", "code": 1000})
+        await comm.wait(timeout=budget(5.0))
 
 
 async def _offline_native_host_session(client: httpx.AsyncClient, app: FastAPI) -> str:
