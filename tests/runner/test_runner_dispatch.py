@@ -8249,12 +8249,106 @@ async def test_sys_session_create_spawns_child_under_caller() -> None:
     # message threaded through to the create body.
     assert captured["parent_session_id"] == "conv_caller"
     assert captured["agent_id"] == "ag_x"
+    assert "host_id" not in captured
+    assert "workspace" not in captured
     assert captured["title"] == "auth"
     assert captured["initial_items"][0]["data"]["content"][0]["text"] == "start"
     handle = json.loads(output)
     assert handle["conversation_id"] == "conv_child"
     assert handle["agent_id"] == "ag_x"
     assert handle["agent_name"] == "researcher"
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_places_child_on_requested_host() -> None:
+    """Explicit placement sends the chosen host and caller workspace to the API."""
+    from omnigent.runner.tool_dispatch import execute_tool
+    from omnigent.tools.builtins.spawn import SysSessionCreateTool
+
+    schema = SysSessionCreateTool().get_schema()["function"]["parameters"]
+    assert schema["properties"]["host_id"]["type"] == "string"
+
+    captured: dict[str, Any] = {}
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            201,
+            json={"id": "conv_child", "agent_id": "ag_x", "status": "idle"},
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler), base_url="http://server"
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps({"agent_id": "ag_x", "host_id": "host_m2"}),
+            server_client=server_client,
+            conversation_id="conv_caller",
+            runner_workspace=Path("/Users/example/project"),
+        )
+
+    assert captured["host_id"] == "host_m2"
+    assert captured["workspace"] == "/Users/example/project"
+    assert captured["parent_session_id"] == "conv_caller"
+    assert json.loads(output)["conversation_id"] == "conv_child"
+
+
+@pytest.mark.asyncio
+async def test_sys_session_create_rejects_invalid_host_id_before_server_call() -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"invalid host id must not reach server: {request.url}")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler), base_url="http://server"
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps({"agent_id": "ag_x", "host_id": "host m2"}),
+            server_client=server_client,
+            conversation_id="conv_caller",
+            runner_workspace=Path("/Users/example/project"),
+        )
+
+    assert "host identifier" in json.loads(output)["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "detail", "expected"),
+    [
+        (403, "not your host", "host_not_authorized"),
+        (404, "host not found", "host_unavailable_or_unauthorized"),
+        (409, "host is offline", "host_unavailable"),
+    ],
+)
+async def test_sys_session_create_reports_host_placement_failures(
+    status: int,
+    detail: str,
+    expected: str,
+) -> None:
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"detail": detail})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler), base_url="http://server"
+    ) as server_client:
+        output = await execute_tool(
+            tool_name="sys_session_create",
+            arguments=json.dumps({"agent_id": "ag_x", "host_id": "host_m2"}),
+            server_client=server_client,
+            conversation_id="conv_caller",
+            runner_workspace=Path("/Users/example/project"),
+        )
+
+    info = json.loads(output)
+    assert info["error"] == expected
+    assert info["host_id"] == "host_m2"
+    assert info["detail"] == detail
 
 
 @pytest.mark.asyncio

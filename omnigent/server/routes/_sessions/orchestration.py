@@ -90,7 +90,7 @@ from omnigent.runner.mcp_execution_registry import (
     RUNNER_MCP_EXECUTION_DETACHED_CODE,
     RUNNER_MCP_EXECUTION_DETACHED_MESSAGE,
 )
-from omnigent.runner.routing import RunnerRouter
+from omnigent.runner.routing import RunnerRouter, routing_host_id
 from omnigent.runner.session_init_protocol import build_runner_session_init_payload
 from omnigent.runner.subagent_routing import (
     ROUTING_DECISION_LABEL_KEY,
@@ -10705,12 +10705,19 @@ async def _create_session_from_existing_agent(
             )
 
     # Inherit runner affinity from the parent session so the child
-    # is assigned to the same runner (sub-agent co-location).
+    # is assigned to the same runner (sub-agent co-location). An
+    # explicit host selection takes precedence when it names a
+    # different host: bind the child to that host and let the session
+    # create route launch a new runner there.
     inherited_runner_id: str | None = None
     if body.parent_session_id is not None:
         parent_conv = _parent_for_routing
         if parent_conv is not None:
-            inherited_runner_id = parent_conv.runner_id
+            parent_host_id = await asyncio.to_thread(
+                routing_host_id, parent_conv, conversation_store
+            )
+            if body.host_id is None or body.host_id == parent_host_id:
+                inherited_runner_id = parent_conv.runner_id
             # Defense-in-depth: don't inherit a runner the
             # caller doesn't own.
             if (
