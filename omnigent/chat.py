@@ -1672,6 +1672,17 @@ async def _prepare_chat_session_via_daemon(
                     fork_result = await sdk.sessions.fork(fork_session_id)
                     return fork_result["id"], False
                 if resume_conversation_id is not None:
+                    snapshot = await sdk.sessions.get(resume_conversation_id)
+                    # A session's host owns its runner tunnel and workspace. A
+                    # CLI pointed at another host must not silently rebind it.
+                    # Hostless imported sessions remain eligible for first bind.
+                    session_host_id = snapshot.host_id
+                    if session_host_id and session_host_id != host_id:
+                        raise click.ClickException(
+                            f"Session {resume_conversation_id} is bound to host "
+                            f"{session_host_id}, but this CLI is targeting host {host_id}. "
+                            "Resume it on its bound host or explicitly import/copy it first."
+                        )
                     return resume_conversation_id, False
                 created = await sdk.sessions.create(
                     bundle, filename="agent.tar.gz", workspace=workspace
