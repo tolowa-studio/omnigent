@@ -30,7 +30,7 @@ from omnigent.factory.gate_a.real_chat import (
     parse_operator_command,
 )
 from omnigent.inner.datamodel import Message
-from omnigent.inner.executor import ExecutorError, TextChunk
+from omnigent.inner.executor import ExecutorConfig, ExecutorError, TextChunk, TurnComplete
 from omnigent.inner.factory_gate_a_real_harness import FactoryGateARealExecutor
 
 _TASK_ID = "unit-order-task"
@@ -188,6 +188,75 @@ def test_submit_passes_task_contract_stdin_unchanged_with_linear_issue(tmp_path:
     assert json.loads(captured_stdin[0])["linear_issue"] == linear_issue
 
 
+def test_submit_persists_authenticated_origin_session_without_mcp_or_secret_env(
+    tmp_path: Path,
+) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    contracts = tmp_path / "contracts"
+    _install_fixture_cli(core_root)
+    _write_contract(contracts, _TASK_ID, _sample_contract())
+    env = _submit_env(contracts_dir=contracts, core_root=core_root, orders_root=orders_root)
+    origin_session = "b2541208630048c280a6ffa7339df2d7"
+    seen_env: list[dict[str, str]] = []
+
+    def _runner(
+        argv: list[str], child_env: dict[str, str], stdin_text: str
+    ) -> subprocess.CompletedProcess[str]:
+        seen_env.append(child_env)
+        assert "origin_session" not in json.loads(stdin_text)
+        return subprocess.run(
+            argv, env=child_env, input=stdin_text, capture_output=True, text=True
+        )
+
+    submit_motion_order_draft(
+        _TASK_ID,
+        env,
+        origin_session=origin_session,
+        subprocess_runner=_runner,
+    )
+
+    order_id = expected_structured_order_id("fixture-client", _TASK_ID)
+    persisted = json.loads((orders_root / ".fixture-order-index.json").read_text(encoding="utf-8"))
+    assert persisted[_TASK_ID]["origin_session"] == origin_session
+    task = json.loads((orders_root / order_id / "task.json").read_text(encoding="utf-8"))
+    assert task["origin_session"] == origin_session
+    assert seen_env[0]["MOTION_SESSION_ID"] == origin_session
+    assert "OPENAI_API_KEY" not in seen_env[0]
+    assert "ANTHROPIC_API_KEY" not in seen_env[0]
+    assert not any(key.startswith("MCP_") for key in seen_env[0])
+    assert (orders_root / order_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_executor_submit_uses_authenticated_session_context_and_ignores_mcp_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind_real_chat_minimal(monkeypatch)
+    submitted: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "omnigent.inner.factory_gate_a_real_harness.submit_motion_order_draft",
+        lambda task_id, **kwargs: (
+            submitted.append((task_id, kwargs.get("origin_session"))) or "order_submit_ok: true\n"
+        ),
+    )
+    session_id = "67d18011f49647d2af938122c3c45366"
+    mcp_tool = {"name": "mcp__stash__remember", "parameters": {"type": "object"}}
+    events = [
+        event
+        async for event in FactoryGateARealExecutor().run_turn(
+            [Message(role="user", content=f"order submit {_TASK_ID}")],
+            [mcp_tool],
+            "",
+            config=ExecutorConfig(extra={"omnigent_session_id": session_id}),
+        )
+    ]
+
+    assert submitted == [(_TASK_ID, session_id)]
+    assert [type(event) for event in events] == [TextChunk, TurnComplete]
+
+
 def test_load_task_contract_rejects_unknown_field(tmp_path: Path) -> None:
     contracts = tmp_path / "contracts"
     contract = _sample_contract()
@@ -198,6 +267,17 @@ def test_load_task_contract_rejects_unknown_field(tmp_path: Path) -> None:
         load_task_contract_bytes(_TASK_ID, {MOTION_TASK_CONTRACTS_DIR_ENV: str(contracts)})
     assert malicious_key not in str(exc.value)
     assert "sk-live" not in str(exc.value)
+
+
+def test_load_task_contract_rejects_untrusted_origin_session(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    _write_contract(
+        contracts,
+        _TASK_ID,
+        _sample_contract(origin_session="b2541208630048c280a6ffa7339df2d7"),
+    )
+    with pytest.raises(ValueError, match="unsupported fields"):
+        load_task_contract_bytes(_TASK_ID, {MOTION_TASK_CONTRACTS_DIR_ENV: str(contracts)})
 
 
 def test_load_task_contract_idempotency_mismatch(tmp_path: Path) -> None:
@@ -561,7 +641,7 @@ async def test_http_order_submit_safe_summary(
     from omnigent.inner import factory_gate_a_real_harness
 
     app = factory_gate_a_real_harness.create_app()
-    conversation_id = "conv_motion_order_submit"
+    conversation_id = "67d18011f49647d2af938122c3c45366"
     app.state.conversation_id = conversation_id
     body = {
         "type": "message",

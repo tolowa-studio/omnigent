@@ -73,6 +73,8 @@ _POLICY_REVIEW_BOLD_FIELD_RE = re.compile(r"^\*\*[A-Z][A-Z0-9_ ]*:\*\*")
 _GITHUB_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _CANONICAL_CLIENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _BRIEF_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
+_OMNIGENT_SESSION_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_MOTION_SESSION_ID_ENV = "MOTION_SESSION_ID"
 
 _CORE_EXIT_IDEMPOTENCY_CONFLICT = 4
 _CORE_EXIT_IDEMPOTENCY_AMBIGUOUS = 5
@@ -374,10 +376,17 @@ def _raise_for_submit_exit_code(returncode: int) -> None:
     raise ValueError(f"Motion Core order submit exited with code {returncode}")
 
 
+def _validate_origin_session_id(value: str) -> str:
+    if not isinstance(value, str) or not _OMNIGENT_SESSION_ID_RE.fullmatch(value):
+        raise ValueError("Omnigent session id is invalid for Motion Core provenance")
+    return value
+
+
 def submit_motion_order_draft(
     task_id: str,
     environ: dict[str, str] | None = None,
     *,
+    origin_session: str | None = None,
     subprocess_runner: MotionOrderSubmitSubprocessRunner | None = None,
 ) -> str:
     if not motion_order_submit_enabled(environ):
@@ -406,6 +415,10 @@ def submit_motion_order_draft(
         "--json",
     ]
     child_env = _minimal_node_env(env)
+    if origin_session is not None:
+        # This value comes from Omnigent's authenticated request context, never
+        # from the operator-authored task contract or chat command.
+        child_env[_MOTION_SESSION_ID_ENV] = _validate_origin_session_id(origin_session)
     runner = subprocess_runner or _default_subprocess_runner_with_stdin
     try:
         completed = runner(argv, child_env, task_text)

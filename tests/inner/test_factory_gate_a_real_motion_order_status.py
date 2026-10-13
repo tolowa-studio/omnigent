@@ -171,6 +171,7 @@ def test_read_motion_order_status_summary_success(tmp_path: Path) -> None:
     assert "report_mismatch_count: 0" in summary
     assert f"order_id: {_ORDER_ID}" in summary
     assert "state: running" in summary
+    assert "last_run_result: unknown" in summary
     assert "receipt_category_count: 2" in summary
     assert _SECRET_TOKEN not in summary
     assert "must not appear" not in summary
@@ -222,6 +223,58 @@ def test_read_motion_order_status_report_ok_false_with_unavailable_sections(
     assert "report_unavailable_count: 3" in summary
     assert "report_mismatch_count: 0" in summary
     assert "state: new" in summary
+
+
+@pytest.mark.parametrize(
+    ("run_ok", "run_status", "expected_result"),
+    [(False, "error", "failed"), (True, "ok", "succeeded")],
+)
+def test_read_motion_order_status_reports_last_run_result_separately(
+    tmp_path: Path,
+    run_ok: bool,
+    run_status: str,
+    expected_result: str,
+) -> None:
+    payload = _ok_payload()
+    payload["order"] = {
+        "order_id": _ORDER_ID,
+        "state": "started",
+        "last_run": {"ok": run_ok, "status": run_status},
+    }
+    payload["report"]["effective_result"] = {
+        "status": expected_result,
+        "source": "last_run",
+        "run_status": run_status,
+        "at": "2026-10-13T10:00:00.000Z",
+    }
+
+    summary = _read_with_payload(tmp_path, payload)
+    assert "order_status_ok: true" in summary
+    assert "report_ok: true" in summary
+    assert "state: started" in summary
+    assert f"last_run_result: {expected_result}" in summary
+    assert "does not imply order acceptance" in summary
+
+
+@pytest.mark.parametrize(
+    ("last_run", "effective_result"),
+    [
+        ({"ok": "false", "status": "error"}, {"status": "failed", "source": "last_run"}),
+        ({"ok": False, "status": "error"}, {"status": "succeeded", "source": "last_run"}),
+        ({"ok": False, "status": "ok"}, {"status": "failed", "source": "last_run"}),
+    ],
+)
+def test_read_motion_order_status_rejects_invalid_or_inconsistent_last_run(
+    tmp_path: Path,
+    last_run: dict[str, object],
+    effective_result: dict[str, object],
+) -> None:
+    payload = _ok_payload()
+    payload["order"] = {"order_id": _ORDER_ID, "state": "started", "last_run": last_run}
+    payload["report"]["effective_result"] = effective_result
+
+    with pytest.raises(ValueError, match="last_run"):
+        _read_with_payload(tmp_path, payload)
 
 
 _SUSPICIOUS_REPORTED_ID = "ord-evil-do-not-echo-in-error-msg"

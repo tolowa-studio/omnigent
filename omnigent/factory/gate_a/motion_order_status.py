@@ -187,15 +187,59 @@ def resolve_node_executable(path_value: str) -> Path:
 
 _REPORT_SECTION_UNAVAILABLE = "unavailable"
 _REPORT_SECTION_MISMATCH = "mismatch"
+_LAST_RUN_RESULTS = {"failed", "succeeded", "unknown"}
 
 
-def _parse_motion_core_report(report: object, *, requested_order_id: str) -> tuple[bool, int, int]:
+def _parse_last_run_result(order: dict[str, Any]) -> str:
+    last_run = order.get("last_run")
+    if last_run is None:
+        return "unknown"
+    if not isinstance(last_run, dict):
+        raise ValueError("Motion Core status order.last_run must be an object or null")
+
+    ok = last_run.get("ok")
+    if ok is not None and type(ok) is not bool:
+        raise ValueError("Motion Core status order.last_run.ok must be a boolean or null")
+    raw_status = last_run.get("status")
+    status = None
+    if raw_status is not None:
+        status = _require_safe_status_token(
+            _require_str_field(last_run, "status"),
+            "order.last_run.status",
+        )
+    if ok is None:
+        return "unknown"
+    if (ok and status == "error") or (not ok and status == "ok"):
+        raise ValueError("Motion Core status order.last_run fields are inconsistent")
+    return "succeeded" if ok else "failed"
+
+
+def _parse_motion_core_report(
+    report: object,
+    *,
+    requested_order_id: str,
+    last_run_result: str,
+) -> tuple[bool, int, int]:
     if not isinstance(report, dict):
         raise ValueError("Motion Core status report must be an object")
     report_ok = _require_bool(report, "ok")
     reported_id = _require_str_field(report, "order_id")
     if reported_id != requested_order_id:
         raise ValueError("Motion Core report order_id does not match requested order_id")
+    if "effective_result" in report:
+        effective_result = report.get("effective_result")
+        if not isinstance(effective_result, dict):
+            raise ValueError("Motion Core status report.effective_result must be an object")
+        effective_status = _require_safe_status_token(
+            _require_str_field(effective_result, "status"),
+            "report.effective_result.status",
+        )
+        if effective_status not in _LAST_RUN_RESULTS:
+            raise ValueError("Motion Core status report.effective_result.status is unsupported")
+        source = effective_result.get("source")
+        expected_source = "last_run" if last_run_result != "unknown" else None
+        if source != expected_source or effective_status != last_run_result:
+            raise ValueError("Motion Core report.effective_result does not match order.last_run")
     sections = report.get("sections")
     if not isinstance(sections, dict):
         raise ValueError("Motion Core status report sections must be an object")
@@ -300,6 +344,7 @@ def format_motion_order_safe_summary(
     order_id: str,
     state: str,
     cancellation_phase: str | None,
+    last_run_result: str = "unknown",
     receipt_category_count: int,
     report_ok: bool,
     report_unavailable_count: int,
@@ -314,6 +359,7 @@ def format_motion_order_safe_summary(
         f"report_mismatch_count: {report_mismatch_count}",
         f"order_id: {order_id}",
         f"state: {state}",
+        f"last_run_result: {last_run_result}",
         f"cancellation_phase: {phase_display}",
         f"receipt_category_count: {receipt_category_count}",
     ]
@@ -328,7 +374,10 @@ def format_motion_order_safe_summary(
                 f"brief_hash: {structured_bindings.brief_hash}",
             ]
         )
-    lines.append("note: snapshot from Motion Core order status (not live worker state)")
+    lines.append(
+        "note: snapshot from Motion Core order status (not live worker state); "
+        "last_run_result does not imply order acceptance"
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -353,6 +402,7 @@ def _parse_motion_order_json(stdout: str, *, requested_order_id: str) -> str:
     if reported_id != requested_order_id:
         raise ValueError("Motion Core order_id does not match requested order_id")
     state = _require_safe_status_token(_require_str_field(order, "state"), "order.state")
+    last_run_result = _parse_last_run_result(order)
     raw_phase = _optional_str_field(payload, "cancellation_phase")
     cancellation_phase = (
         _require_safe_status_token(raw_phase, "cancellation_phase")
@@ -364,11 +414,13 @@ def _parse_motion_order_json(stdout: str, *, requested_order_id: str) -> str:
     report_ok, report_unavailable_count, report_mismatch_count = _parse_motion_core_report(
         payload.get("report"),
         requested_order_id=requested_order_id,
+        last_run_result=last_run_result,
     )
     return format_motion_order_safe_summary(
         order_id=reported_id,
         state=state,
         cancellation_phase=cancellation_phase,
+        last_run_result=last_run_result,
         receipt_category_count=receipt_category_count,
         report_ok=report_ok,
         report_unavailable_count=report_unavailable_count,
