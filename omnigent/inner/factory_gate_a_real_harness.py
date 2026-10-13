@@ -98,7 +98,10 @@ class FactoryGateARealExecutor(Executor):
 
         if command.kind == "order_submit":
             try:
-                summary = submit_motion_order_draft(command.task_id)
+                summary = submit_motion_order_draft(
+                    command.task_id,
+                    origin_session=omnigent_session_id,
+                )
             except ValueError as exc:
                 yield ExecutorError(message=str(exc))
                 return

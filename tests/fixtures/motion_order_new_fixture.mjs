@@ -124,10 +124,18 @@ function runNew(argv) {
     order_id: orderId,
     brief_hash: briefHash,
     state: "new",
+    origin_session: process.env.MOTION_SESSION_ID ?? null,
     leak_probe: "must not appear in chat",
     authority_ref: task.authority_ref,
     objective: task.objective,
   };
+  const orderPath = join(ordersRoot, orderId);
+  mkdirSync(orderPath, { recursive: true });
+  writeFileSync(
+    join(orderPath, "task.json"),
+    JSON.stringify({ order_id: orderId, origin_session: record.origin_session }, null, 2) + "\n",
+    "utf8",
+  );
   index[key] = record;
   saveIndex(indexPath, index);
   const payload = flatOkPayload({
