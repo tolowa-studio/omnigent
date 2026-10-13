@@ -3309,6 +3309,8 @@ def _build_session_create_body(
     message: object,
     model: object = None,
     reasoning_effort: object = None,
+    host_id: str | None = None,
+    workspace: str | None = None,
 ) -> _JsonObject:
     """
     Build the JSON ``POST /v1/sessions`` body for ``sys_session_create``.
@@ -3348,6 +3350,9 @@ def _build_session_create_body(
         body["model_override"] = model
     if isinstance(reasoning_effort, str) and reasoning_effort:
         body["reasoning_effort"] = reasoning_effort
+    if host_id is not None:
+        body["host_id"] = host_id
+        body["workspace"] = workspace
     if isinstance(message, str) and message:
         body["initial_items"] = [
             {
@@ -3486,6 +3491,29 @@ async def _execute_session_create(
                 )
             }
         )
+    host_id = args.get("host_id")
+    if host_id is not None:
+        if (
+            not isinstance(host_id, str)
+            or re.fullmatch(r"[A-Za-z0-9._:-]{1,255}", host_id) is None
+        ):
+            return json.dumps(
+                {"error": "host_id must be a non-empty host identifier (up to 255 characters)"}
+            )
+        if has_config_path:
+            return json.dumps(
+                {"error": "sys_session_create host_id placement requires 'agent_id' mode"}
+            )
+        if runner_workspace is None or not runner_workspace.is_absolute():
+            return json.dumps(
+                {
+                    "error": (
+                        "host_id placement requires an absolute caller workspace; "
+                        "the selected host must have that workspace"
+                    ),
+                    "host_id": host_id,
+                }
+            )
     if has_config_path:
         # The multipart create carries only the config bundle, so an effort
         # passed here would never reach the child. Refuse instead of dropping it.
@@ -3515,11 +3543,54 @@ async def _execute_session_create(
         args.get("message"),
         model=args.get("model"),
         reasoning_effort=args.get("reasoning_effort"),
+        host_id=host_id if isinstance(host_id, str) else None,
+        workspace=str(runner_workspace) if host_id is not None else None,
     )
     try:
         resp = await server_client.post("/v1/sessions", json=body, timeout=30.0)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"sys_session_create failed: {exc}"})
+    response_detail = ""
+    if host_id is not None:
+        try:
+            payload = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            raw_detail = payload.get("detail")
+            if isinstance(raw_detail, str):
+                response_detail = raw_detail
+            raw_error = payload.get("error")
+            if isinstance(raw_error, dict) and isinstance(raw_error.get("message"), str):
+                response_detail = raw_error["message"]
+    if host_id is not None and resp.status_code == 403 and "host" in response_detail.lower():
+        return json.dumps(
+            {
+                "error": "host_not_authorized",
+                "host_id": host_id,
+                "detail": response_detail[:200],
+            }
+        )
+    if host_id is not None and resp.status_code == 404 and "host" in response_detail.lower():
+        return json.dumps(
+            {
+                "error": "host_unavailable_or_unauthorized",
+                "host_id": host_id,
+                "detail": response_detail[:200],
+            }
+        )
+    if (
+        host_id is not None
+        and resp.status_code in (400, 409)
+        and "host" in response_detail.lower()
+    ):
+        return json.dumps(
+            {
+                "error": "host_unavailable",
+                "host_id": host_id,
+                "detail": response_detail[:200],
+            }
+        )
     if resp.status_code == 404:
         return json.dumps({"error": "agent_not_found", "agent_id": agent_id})
     if resp.status_code in (401, 403):

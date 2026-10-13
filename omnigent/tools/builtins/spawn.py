@@ -898,6 +898,11 @@ class SysSessionCreateTool(Tool):
 
     Runner-dispatched: both modes force ``parent_session_id`` to the
     caller.
+
+    An optional ``host_id`` places the child on an explicitly selected,
+    online host owned by the caller. When omitted, the child keeps the
+    caller's existing runner affinity. Host placement uses the caller's
+    workspace path and the server validates that it exists on the target.
     """
 
     @classmethod
@@ -928,6 +933,9 @@ class SysSessionCreateTool(Tool):
             "re-upload its bundle. Optionally queue an initial user "
             "message. The new session is always a child of the calling "
             "session (you cannot create top-level or sibling sessions). "
+            "Optionally pass host_id to place the child on one of your "
+            "online hosts; the caller's workspace path is validated on "
+            "that host. Omit host_id to keep the default runner affinity. "
             "Returns {conversation_id, agent_id, title, status}; the "
             "session runs asynchronously — monitor it with "
             "sys_session_get_history / sys_session_get_info or drive it "
@@ -1020,6 +1028,17 @@ class SysSessionCreateTool(Tool):
                                 "'agent_id', and only for harnesses with "
                                 "effort plumbing; omit to use the agent's "
                                 "default."
+                            ),
+                        },
+                        "host_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional id of an online host you own; "
+                                "available with agent_id mode. The child starts "
+                                "in the caller's workspace, which must exist "
+                                "on that host. Omit to keep the default "
+                                "runner affinity. The server checks host "
+                                "ownership and availability."
                             ),
                         },
                     },
