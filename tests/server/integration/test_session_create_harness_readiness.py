@@ -160,7 +160,7 @@ async def test_top_level_create_rejects_unavailable_harness(
     assert response.json()["error"]["code"] == "harness_not_configured"
 
 
-async def test_agent_id_child_uses_parent_host_even_if_request_names_another(
+async def test_child_uses_explicit_host_and_default_child_uses_parent_host(
     client: httpx.AsyncClient,
     app: FastAPI,
     db_uri: str,
@@ -203,7 +203,7 @@ async def test_agent_id_child_uses_parent_host_even_if_request_names_another(
         configured_harnesses={"jcode": True},
     )
     app.state.host_store = hosts
-    response = await client.post(
+    placed_response = await client.post(
         "/v1/sessions",
         json={
             "agent_id": jcode["id"],
@@ -212,8 +212,25 @@ async def test_agent_id_child_uses_parent_host_even_if_request_names_another(
             "workspace": "/tmp/workspace",
         },
     )
-    assert response.status_code == 412, response.text
-    assert response.json()["error"]["code"] == "harness_not_configured"
+    # The requested host has jcode configured while the parent's host does
+    # not. Reaching host launch and failing because that host is offline proves
+    # readiness and launch used the explicit target host.
+    assert placed_response.status_code == 409, placed_response.text
+    assert placed_response.json()["error"]["code"] == "conflict"
+    assert placed_response.json()["error"]["message"] == "host is offline"
+
+    # Without an explicit host, preserve sub-agent co-location and validate
+    # against the parent's host configuration.
+    default_response = await client.post(
+        "/v1/sessions",
+        json={
+            "agent_id": jcode["id"],
+            "parent_session_id": parent["id"],
+            "workspace": "/tmp/workspace",
+        },
+    )
+    assert default_response.status_code == 412, default_response.text
+    assert default_response.json()["error"]["code"] == "harness_not_configured"
 
 
 async def test_loaded_parent_does_not_require_another_session_read(
