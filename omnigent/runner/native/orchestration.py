@@ -8881,6 +8881,15 @@ async def _auto_create_claude_terminal(
 
     claude_terminal_env_unset = _claude_terminal_env_unset(claude_config)
 
+    terminal_sandbox = agent_os_env.sandbox if agent_os_env is not None else None
+    if terminal_sandbox is not None and terminal_sandbox.type == "darwin_seatbelt":
+        # Claude reads --settings before the bridge hooks can run.
+        settings_path = str(bridge_dir / "claude-settings.json")
+        terminal_sandbox = dataclasses.replace(
+            terminal_sandbox,
+            read_paths=[*(terminal_sandbox.read_paths or []), settings_path],
+        )
+
     # Inherit the agent's os_env so its sandbox (e.g. ``type: none``),
     # egress_rules and env_passthrough are honoured. Without ``sandbox`` here
     # and ``parent_os_env`` below, launch_terminal falls back to
@@ -8891,7 +8900,7 @@ async def _auto_create_claude_terminal(
         os_env=OSEnvSpec(
             type="caller_process",
             cwd=workspace,
-            sandbox=(agent_os_env.sandbox if agent_os_env is not None else None),
+            sandbox=terminal_sandbox,
         ),
         command=launch_command,
         args=launch_args,
