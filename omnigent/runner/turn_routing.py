@@ -140,6 +140,7 @@ def _hook_state_path(bridge_dir: Path, filename: str) -> Path:
     output_dir = bridge_dir / "hook-output"
     return (output_dir if output_dir.is_dir() else bridge_dir) / filename
 
+
 #: Path served by the loopback relay.
 ROUTE_PATH_TEMPLATE = "/v1/sessions/{session_id}/route-turn"
 
