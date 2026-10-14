@@ -89,7 +89,7 @@ def test_session_end_is_source_timed_private_and_independent_of_debug_capture(
     _hook(monkeypatch, directory, "SessionStart", 100.0, source="startup")
     _hook(monkeypatch, directory, "UserPromptSubmit", 101.0, prompt="private user prompt")
     _hook(monkeypatch, directory, "Stop", 102.0, last_assistant_message="private answer")
-    before = (directory / "state.json").read_bytes()
+    before = (directory / "hook-output" / "state.json").read_bytes()
     _hook(
         monkeypatch,
         directory,
@@ -112,9 +112,9 @@ def test_session_end_is_source_timed_private_and_independent_of_debug_capture(
     assert end["timestamp_source"] == "hook_received"
     assert end["reason_status"] == reason_status
     assert end["signal"] == "SIGTERM"
-    assert (directory / "state.json").read_bytes() == before
-    assert "SessionEnd" not in (directory / "hooks.jsonl").read_text()
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    assert (directory / "hook-output" / "state.json").read_bytes() == before
+    assert "SessionEnd" not in (directory / "hook-output" / "hooks.jsonl").read_text()
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     assert path.stat().st_mode & 0o777 == 0o600
     for private in (
         "private user prompt",
@@ -211,7 +211,7 @@ def test_malformed_tail_preserves_valid_end_and_counts_omissions_once(
     _hook(monkeypatch, directory, "Stop", 102.0)
     _hook(monkeypatch, directory, "SessionEnd", 103.0, reason="logout")
     end = _read(launch)["session_end"]
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     state = json.loads(path.read_text())
     older_valid = [
         {"event_name": "PreCompact", "recorded_at": 50.0 + i, "claude_session_id": "claude-a"}
@@ -256,7 +256,7 @@ def test_contended_lifecycle_lock_is_bounded_and_session_end_can_recover(
 ) -> None:
     directory, trace = launch
     _hook(monkeypatch, directory, "SessionStart", 100.0, source="startup")
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     with FileLock(str(path) + ".lock", mode=0o600, timeout=0):
         started = time.monotonic()
         _hook(monkeypatch, directory, "SessionEnd", 101.0, reason="logout")
@@ -272,7 +272,7 @@ def test_lifecycle_lock_is_private_while_writing_evidence(
     launch: tuple[Path, TerminalLifecycleTrace], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     directory, trace = launch
-    lifecycle_path = directory / f"lifecycle-{trace.launch_id}.json"
+    lifecycle_path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     lock_modes: list[int] = []
     write_json_file = bridge._write_json_file
 
@@ -403,7 +403,7 @@ def test_unreadable_evidence_and_recording_failure_do_not_fail_session_end(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     directory, trace = launch
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     path.write_text("{broken")
     assert _read(launch)["read_status"] == "unreadable"
 
@@ -431,7 +431,7 @@ def test_prepare_bridge_dir_preserves_launch_evidence_until_bridge_cleanup(
 
     assert bridge.prepare_bridge_dir("session-a", workspace=directory.parent) == directory
     assert not transient.exists()
-    assert not (directory / "state.json").exists()
+    assert not (directory / "hook-output" / "state.json").exists()
     assert _read(launch) == original
     assert bridge.prune_orphaned_bridge_dirs() == 0
 
@@ -448,7 +448,7 @@ def test_lifecycle_reader_rejects_linked_nonregular_and_oversize_input(
     directory, trace = launch
     _hook(monkeypatch, directory, "SessionStart", 100.0, source="startup")
     _hook(monkeypatch, directory, "SessionEnd", 101.0, reason="logout")
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     if kind == "oversize":
         path.write_bytes(path.read_bytes().ljust(lifecycle._MAX_BYTES, b" "))
         assert _read(launch)["session_end_reason"] == "logout"
@@ -515,7 +515,7 @@ def test_unknown_schema_is_not_used_or_overwritten(
 ) -> None:
     directory, trace = launch
     _hook(monkeypatch, directory, "SessionStart", 100.0, source="startup")
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     state = json.loads(path.read_text())
     state["schema_version"] = 99
     path.write_text(json.dumps(state))
@@ -534,7 +534,7 @@ def test_invalid_record_is_preserved_instead_of_treated_as_a_missing_file(
     read_status: str,
 ) -> None:
     directory, trace = launch
-    path = directory / f"lifecycle-{trace.launch_id}.json"
+    path = directory / "hook-output" / f"lifecycle-{trace.launch_id}.json"
     path.write_text(content)
     assert _read(launch)["read_status"] == read_status
     _hook(monkeypatch, directory, "SessionEnd", 101.0, reason="logout")

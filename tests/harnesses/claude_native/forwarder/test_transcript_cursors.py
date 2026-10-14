@@ -1222,7 +1222,7 @@ async def test_forwarder_migrates_hook_cursor_state_to_byte_offset(tmp_path: Pat
         "data": {"status": "failed"},
     }
     assert state["event_cursor"] == 2
-    assert state["byte_offset"] == (bridge_dir / "hooks.jsonl").stat().st_size
+    assert state["byte_offset"] == (bridge_dir / "hook-output" / "hooks.jsonl").stat().st_size
 
 
 @pytest.mark.asyncio

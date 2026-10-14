@@ -1441,8 +1441,8 @@ async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     """
     Host-spawned Claude terminal honours the agent's ``os_env.sandbox``.
 
-    Confirms an active sandbox gets only this session's bridge and marker
-    directory. ``none`` and an unset sandbox retain their prior behavior.
+    Confirms an active sandbox can read its runner-owned config but can write
+    only its own hook output. ``none`` and an unset sandbox stay unchanged.
 
     :param tmp_path: Pytest-provided temporary directory.
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -1533,25 +1533,27 @@ async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     else:
         assert launched_sandbox is not None
         assert launched_sandbox.type == sandbox_type
-        assert launched_sandbox.read_paths == ["/existing/read"]
         if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
             bridge_dir = claude_native_bridge.bridge_dir_for_bridge_id(
                 "e27fc87ef2a8d798895ce8c1e66db82d"
             )
+            output_dir = bridge_dir / claude_native_bridge.HOOK_OUTPUT_DIR
             marker_root = claude_native_bridge.approval_wait_marker_root(
                 "e27fc87ef2a8d798895ce8c1e66db82d", bridge_dir=bridge_dir
             )
-            assert launched_sandbox.write_paths == [
-                "/existing/write",
-                str(bridge_dir),
-                str(marker_root),
-            ]
+            assert launched_sandbox.read_paths == ["/existing/read", str(bridge_dir)]
+            assert launched_sandbox.write_paths == ["/existing/write", str(output_dir)]
             settings_path = str(bridge_dir / "claude-settings.json")
             assert settings_path in captured["spec"].args
-            assert str(claude_native_bridge.bridge_dir_for_bridge_id("peer")) not in (
+            assert marker_root.is_dir()
+            assert str(bridge_dir) not in launched_sandbox.write_paths
+            peer_dir = claude_native_bridge.bridge_dir_for_bridge_id("peer")
+            assert str(peer_dir) not in launched_sandbox.read_paths
+            assert str(peer_dir / claude_native_bridge.HOOK_OUTPUT_DIR) not in (
                 launched_sandbox.write_paths or []
             )
         else:
+            assert launched_sandbox.read_paths == ["/existing/read"]
             assert launched_sandbox.write_paths == ["/existing/write"]
         # The launch gets a copied sandbox; the agent's original policy is intact.
         assert agent_sandbox is not None

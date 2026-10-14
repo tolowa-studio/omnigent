@@ -60,7 +60,7 @@ def _timestamp(value: object) -> float | None:
 def _path(bridge_dir: Path, launch_id: str) -> Path:
     if not _LAUNCH_ID.fullmatch(launch_id):
         raise ValueError("Invalid terminal launch identity")
-    return bridge_dir / f"lifecycle-{launch_id}.json"
+    return bridge_dir / "hook-output" / f"lifecycle-{launch_id}.json"
 
 
 def _read(path: Path) -> dict[str, object] | None:
@@ -151,6 +151,7 @@ def record_hook_lifecycle(
 
         _ensure_secure_dir(bridge_dir)
         path = _path(bridge_dir, launch_id)
+        _ensure_secure_dir(path.parent)
         event: dict[str, object] = {
             "event_id": uuid.uuid4().hex,
             "event_name": name,

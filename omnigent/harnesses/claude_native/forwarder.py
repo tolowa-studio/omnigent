@@ -30,6 +30,7 @@ from omnigent.harnesses.claude_native.bridge import (
     HookReadResult,
     TranscriptReadResult,
     compute_transcript_cumulative_cost,
+    hook_output_read_path,
     read_active_session_id,
     read_bridge_id,
     read_claude_context_state,
@@ -229,7 +230,9 @@ def _diagnostic_file_size(path: Path) -> int | None:
 def _last_observer_hook_name(bridge_dir: Path) -> str | None:
     """Return the last recorded observer hook name for diagnostics."""
     try:
-        state = json.loads((bridge_dir / "state.json").read_text(encoding="utf-8"))
+        state = json.loads(
+            hook_output_read_path(bridge_dir, "state.json").read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError):
         return None
     value = state.get("last_hook_event_name") if isinstance(state, dict) else None
@@ -263,8 +266,10 @@ def _observe_transcript_discovery(
     elif diagnostics.warning_logged or elapsed_s < _TRANSCRIPT_DISCOVERY_WARNING_S:
         return
 
-    hooks_size = _diagnostic_file_size(bridge_dir / _HOOKS_FILE)
-    stderr_size = _diagnostic_file_size(bridge_dir / OBSERVER_HOOK_STDERR_FILE)
+    hooks_size = _diagnostic_file_size(hook_output_read_path(bridge_dir, _HOOKS_FILE))
+    stderr_size = _diagnostic_file_size(
+        hook_output_read_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)
+    )
     settings_present = (bridge_dir / _INVOCATION_SETTINGS_FILE).is_file()
     args = (
         max(0.0, elapsed_s),
@@ -309,7 +314,7 @@ def _log_new_observer_hook_stderr(
     byte_offset: int,
 ) -> int:
     """Relay newly captured observer-hook stderr into session-scoped runner logs."""
-    path = bridge_dir / OBSERVER_HOOK_STDERR_FILE
+    path = hook_output_read_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)
     try:
         size = path.stat().st_size
         if size < byte_offset:
@@ -3194,7 +3199,7 @@ async def _maybe_rotate_session_on_clear(
         event_cursor=clear_record.event_cursor,
         byte_offset=clear_record.byte_offset,
         cursor_fingerprint=_jsonl_cursor_fingerprint(
-            bridge_dir / _HOOKS_FILE,
+            hook_output_read_path(bridge_dir, _HOOKS_FILE),
             clear_record.byte_offset,
         ),
     )
@@ -3386,7 +3391,7 @@ async def _maybe_rotate_session_on_fork(
         event_cursor=fork_record.event_cursor,
         byte_offset=fork_record.byte_offset,
         cursor_fingerprint=_jsonl_cursor_fingerprint(
-            bridge_dir / _HOOKS_FILE,
+            hook_output_read_path(bridge_dir, _HOOKS_FILE),
             fork_record.byte_offset,
         ),
     )
@@ -3792,7 +3797,9 @@ async def _ensure_hook_state(
     state = HookForwardState(
         event_cursor=0,
         byte_offset=byte_offset,
-        cursor_fingerprint=_jsonl_cursor_fingerprint(bridge_dir / _HOOKS_FILE, byte_offset),
+        cursor_fingerprint=_jsonl_cursor_fingerprint(
+            hook_output_read_path(bridge_dir, _HOOKS_FILE), byte_offset
+        ),
     )
     await _write_hook_state_async(bridge_dir, state)
     return state
@@ -3900,7 +3907,7 @@ async def _forward_available_status_events(
             event_cursor=result.event_cursor,
             byte_offset=result.byte_offset,
             cursor_fingerprint=_jsonl_cursor_fingerprint(
-                bridge_dir / _HOOKS_FILE, result.byte_offset
+                hook_output_read_path(bridge_dir, _HOOKS_FILE), result.byte_offset
             ),
         )
         await _write_hook_state_async(bridge_dir, durable)
@@ -3912,7 +3919,7 @@ async def _forward_available_status_events(
             event_cursor=record.event_cursor,
             byte_offset=record.byte_offset,
             cursor_fingerprint=_jsonl_cursor_fingerprint(
-                bridge_dir / _HOOKS_FILE, record.byte_offset
+                hook_output_read_path(bridge_dir, _HOOKS_FILE), record.byte_offset
             ),
         )
         # Subagent lifecycle hooks land in the same hooks.jsonl as parent
@@ -4285,7 +4292,9 @@ async def _forward_available_status_events(
     durable = HookForwardState(
         event_cursor=result.event_cursor,
         byte_offset=result.byte_offset,
-        cursor_fingerprint=_jsonl_cursor_fingerprint(bridge_dir / _HOOKS_FILE, result.byte_offset),
+        cursor_fingerprint=_jsonl_cursor_fingerprint(
+            hook_output_read_path(bridge_dir, _HOOKS_FILE), result.byte_offset
+        ),
     )
     await _write_hook_state_async(bridge_dir, durable)
     return durable
@@ -5054,7 +5063,7 @@ def _validated_hook_state(
     """
     if state.byte_offset is None:
         return state
-    hooks_path = bridge_dir / _HOOKS_FILE
+    hooks_path = hook_output_read_path(bridge_dir, _HOOKS_FILE)
     current_fingerprint = _jsonl_cursor_fingerprint(hooks_path, state.byte_offset)
     if current_fingerprint is None:
         _logger.warning(
@@ -5472,7 +5481,7 @@ async def _forward_available_deltas(
     # idle / non-streaming polls don't churn the thread pool (this loop
     # polls every ~0.25s). A bare ``exists()`` is a cheap stat consistent
     # with the other sync reads this loop already does each poll.
-    if not (bridge_dir / MESSAGE_DELTAS_FILE).exists():
+    if not hook_output_read_path(bridge_dir, MESSAGE_DELTAS_FILE).exists():
         return state
     result = await asyncio.to_thread(
         read_message_deltas_from_offset, bridge_dir, state.byte_offset
@@ -7191,7 +7200,7 @@ def _hook_end_offset(bridge_dir: Path) -> int:
     :returns: Offset after the last newline-terminated hook record, or
         ``0`` when no complete hook record exists yet.
     """
-    return _complete_jsonl_end_offset(bridge_dir / _HOOKS_FILE)
+    return _complete_jsonl_end_offset(hook_output_read_path(bridge_dir, _HOOKS_FILE))
 
 
 def _complete_jsonl_end_offset(path: Path) -> int:

@@ -22,6 +22,7 @@ from omnigent.harnesses.claude_native.bridge import (
     ClaudeTerminalExited,
     TmuxSessionNotAdvertised,
     cancellable_injection,
+    hook_output_path,
     inject_slash_command,
     inject_user_message,
     is_auth_slash_command,
@@ -130,7 +131,7 @@ class ClaudeNativeExecutor(Executor):
 
     async def _inject_prompt(self, text: str, notices: list[str]) -> None:
         """Inject user text with one-shot context while holding the injection lock."""
-        context_path = self._bridge_dir / CLAUDE_FRAMEWORK_CONTEXT_FILE
+        context_path = hook_output_path(self._bridge_dir, CLAUDE_FRAMEWORK_CONTEXT_FILE)
         context_path.unlink(missing_ok=True)
         if notices:
             context_path.write_text("\n\n".join(notices), encoding="utf-8")
@@ -225,7 +226,9 @@ class ClaudeNativeExecutor(Executor):
         try:
             with telemetry.span("claude_native.inject"):
                 async with self._inject_lock:
-                    context_path = self._bridge_dir / CLAUDE_FRAMEWORK_CONTEXT_FILE
+                    context_path = hook_output_path(
+                        self._bridge_dir, CLAUDE_FRAMEWORK_CONTEXT_FILE
+                    )
                     context_path.unlink(missing_ok=True)
                     if wanted_model_arg is not None:
                         # Accepted trade-off: ``/model <id>`` also saves the
