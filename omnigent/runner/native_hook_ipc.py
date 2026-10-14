@@ -41,7 +41,6 @@ OPERATION_PATHS = frozenset(
         "/policy-evaluate",
         "/rotate-session",
         "/route-turn",
-        "/route-subagent",
         "/route-status",
         "/route-subagent",
         "/tool-list",
