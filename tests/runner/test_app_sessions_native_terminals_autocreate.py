@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -4142,13 +4143,21 @@ async def test_codex_tui_grants_only_its_session_bridge(
     workspace.mkdir()
     bridge_dir = tmp_path / "bridges" / "own"
     bridge_dir.mkdir(parents=True)
+    peer_dir = tmp_path / "bridges" / "peer"
+    peer_dir.mkdir()
+    peer_database = peer_dir / "logs_2.sqlite"
+    peer_database.touch()
     codex_home = bridge_dir / "codex-home"
     codex_home.mkdir()
+    (codex_home / "logs_2.sqlite").symlink_to(peer_database)
     for name in ("auth.json", "config.toml", "hooks.json"):
         (codex_home / name).write_text("protected", encoding="utf-8")
     (bridge_dir / "bridge.json").write_text("protected", encoding="utf-8")
     (bridge_dir / "policy_hook.json").write_text("protected", encoding="utf-8")
-    (codex_home / "state_5.sqlite").write_text("state", encoding="utf-8")
+    state_db = codex_home / "state_5.sqlite"
+    with sqlite3.connect(state_db) as connection:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
     captured: dict[str, Any] = {}
     app_server = SimpleNamespace(
@@ -4215,7 +4224,16 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     bridge_dir / "hook-output",
                 )
             )
-            assert launched.write_files == [str(codex_home / "state_5.sqlite")]
+            assert launched.write_files == [
+                str(state_db),
+                str(codex_home / "state_5.sqlite-wal"),
+                str(codex_home / "state_5.sqlite-shm"),
+            ]
+            assert (codex_home / "state_5.sqlite-wal").is_file()
+            assert (codex_home / "state_5.sqlite-shm").is_file()
+            assert not (codex_home / "logs_2.sqlite-wal").exists()
+            assert not (codex_home / "logs_2.sqlite-shm").exists()
+            assert all("auth.json" not in path for path in launched.write_files)
             from omnigent.runner.turn_routing import (
                 turn_routing_marker_present,
                 write_turn_routing_marker,
@@ -4238,8 +4256,6 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     _build_profile,
                 )
 
-                peer_dir = tmp_path / "bridges" / "peer"
-                peer_dir.mkdir()
                 policy = SeatbeltSandboxBackend().resolve(captured["spec"].os_env, workspace)
                 profile = _build_profile(policy, workspace, argv=["/usr/bin/touch"])
                 own = subprocess.run(
@@ -4280,6 +4296,21 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     check=False,
                 )
                 assert sqlite_write.returncode == 0
+                sqlite_insert = subprocess.run(
+                    [
+                        "/usr/bin/sandbox-exec",
+                        "-p",
+                        profile,
+                        "/usr/bin/sqlite3",
+                        str(state_db),
+                        "PRAGMA journal_mode=WAL; INSERT INTO probe DEFAULT VALUES;",
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                assert sqlite_insert.returncode == 0, sqlite_insert.stderr.decode()
+                with sqlite3.connect(state_db) as connection:
+                    assert connection.execute("SELECT COUNT(*) FROM probe").fetchone() == (1,)
                 marker_write = subprocess.run(
                     [
                         "/usr/bin/sandbox-exec",
@@ -4318,6 +4349,88 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     assert read.returncode == 0
                     assert write.returncode != 0
                     assert protected.read_text(encoding="utf-8") == "protected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_path",
+    ["outside_home", "bridge_symlink", "home_symlink", "sessions_symlink", "wal_symlink"],
+)
+async def test_codex_tui_rejects_unsafe_session_state_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_path: str,
+) -> None:
+    """A writable state grant must never follow a symlink or leave this bridge."""
+    from omnigent.runner.native.orchestration import (
+        _CodexNativeLaunchConfig,
+        _launch_codex_native_tui,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bridge_dir = tmp_path / "bridges" / "own"
+    bridge_dir.parent.mkdir()
+    peer = tmp_path / "bridges" / "peer"
+    peer.mkdir()
+    if invalid_path == "bridge_symlink":
+        bridge_dir.symlink_to(peer, target_is_directory=True)
+    else:
+        bridge_dir.mkdir()
+    codex_home = bridge_dir / "codex-home"
+    if invalid_path == "outside_home":
+        codex_home = peer / "codex-home"
+        codex_home.mkdir()
+    elif invalid_path == "home_symlink":
+        (peer / "codex-home").mkdir()
+        codex_home.symlink_to(peer / "codex-home", target_is_directory=True)
+    else:
+        codex_home.mkdir()
+    if invalid_path == "sessions_symlink":
+        (codex_home / "sessions").symlink_to(peer, target_is_directory=True)
+    if invalid_path == "wal_symlink":
+        (codex_home / "state_5.sqlite").touch()
+        (codex_home / "state_5.sqlite-wal").symlink_to(peer / "probe")
+    monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
+    app_server = SimpleNamespace(
+        listen_url="ws://127.0.0.1:9876",
+        config_overrides=[],
+        codex_cli_version=None,
+        codex_path="/opt/codex/bin/codex",
+        codex_home=codex_home,
+        env={},
+    )
+    agent_spec = AgentSpec(
+        spec_version=1,
+        name="codex",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+        os_env=OSEnvSpec(
+            type="caller_process",
+            cwd=str(workspace),
+            sandbox=OSEnvSandboxSpec(type="darwin_seatbelt"),
+        ),
+    )
+    with pytest.raises(RuntimeError, match=r"private session bridge|must not be a symlink"):
+        await _launch_codex_native_tui(
+            "conv_codex_unsafe_bridge",
+            _RecordingCodexRegistry({}),  # type: ignore[arg-type]
+            lambda _sid, _evt: None,
+            app_server=app_server,  # type: ignore[arg-type]
+            launch_config=_CodexNativeLaunchConfig(
+                workspace=workspace,
+                policy_server_url="http://127.0.0.1:8000",
+                terminal_launch_args=None,
+                model_override=None,
+                external_session_id=None,
+                fork_source_id=None,
+                fork_source_external_id=None,
+                fork_carry_history=False,
+                bypass_sandbox=False,
+            ),
+            bridge_dir=bridge_dir,
+            thread_id=None,
+            agent_spec=agent_spec,
+        )
 
 
 @pytest.mark.asyncio

@@ -4666,7 +4666,12 @@ async def _launch_codex_native_tui(
         "linux_bwrap",
     }:
         codex_home = app_server.codex_home
-        if codex_home != bridge_dir / "codex-home" or codex_home.is_symlink():
+        if (
+            codex_home != bridge_dir / "codex-home"
+            or bridge_dir.is_symlink()
+            or codex_home.is_symlink()
+            or not codex_home.is_dir()
+        ):
             raise RuntimeError("Codex terminal home is outside its private session bridge")
         hook_output = bridge_dir / "hook-output"
         state_dirs = [
@@ -4679,16 +4684,26 @@ async def _launch_codex_native_tui(
             if path.is_symlink():
                 raise RuntimeError("Codex terminal state path must not be a symlink")
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        state_files = sorted(
+        state_databases = sorted(
             path
             for path in codex_home.iterdir()
             if path.is_file()
             and not path.is_symlink()
             and re.fullmatch(
-                r"(?:state|logs|queue|goals|memories)_[0-9]+\.sqlite(?:-(?:wal|shm))?",
+                r"(?:state|logs|queue|goals|memories)_[0-9]+\.sqlite",
                 path.name,
             )
         )
+        state_files = list(state_databases)
+        for database in state_databases:
+            # SQLite creates these beside a database when WAL mode opens a
+            # cleanly closed DB. File grants must exist before bwrap binds it.
+            for suffix in ("-wal", "-shm"):
+                sidecar = database.with_name(database.name + suffix)
+                if sidecar.is_symlink():
+                    raise RuntimeError("Codex terminal state path must not be a symlink")
+                sidecar.touch(mode=0o600, exist_ok=True)
+                state_files.append(sidecar)
         # Keep auth, config, hooks, and bridge bearer files read-only.
         terminal_sandbox = dataclasses.replace(
             terminal_sandbox,
