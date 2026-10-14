@@ -56,6 +56,14 @@ const customReviewer = agent({
   harness: "claude-sdk",
   builtin: false,
 });
+const factoryOrchestrator = agent({
+  id: "4c25-factory-orchestrator",
+  name: "tolowa-factory-orchestrator",
+  display_name: "Tolowa Factory Orchestrator",
+  harness: "codex-native",
+  builtin: false,
+  mine: true,
+});
 const openCode = agent({
   id: "agent-opencode",
   name: "opencode-native-ui",
@@ -325,6 +333,19 @@ export const CustomAgentsSubmenuOpen: Story = {
     await userEvent.click(
       await within(canvasElement.ownerDocument.body).findByTestId("new-chat-landing-custom-agents"),
     );
+  },
+};
+
+export const RegisteredFactoryAgent: Story = {
+  args: { agentEntries: [polly, factoryOrchestrator] },
+  play: async ({ canvasElement }) => {
+    await openPicker(canvasElement);
+    await userEvent.click(
+      await within(canvasElement.ownerDocument.body).findByTestId("new-chat-landing-custom-agents"),
+    );
+    await expect(
+      await within(canvasElement.ownerDocument.body).findByText("Tolowa Factory Orchestrator"),
+    ).toBeVisible();
   },
 };
 

@@ -2,7 +2,6 @@ import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-quer
 import { useMemo } from "react";
 import { useSidebarData } from "./useSidebarData";
 import { authenticatedFetch } from "@/lib/identity";
-import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { agentRootName } from "@/lib/forkHarness";
 import { capitalizeAgentName, useAcpHarnessIds, useHarnessLabels } from "@/lib/agentLabels";
 import {
@@ -297,24 +296,23 @@ async function fetchAvailableAgents(
   pinnedAgentIds: string[],
   queryClient: QueryClient,
   sessionAgents: AvailableAgent[],
-  includeUserAgents = false,
 ): Promise<AvailableAgent[]> {
-  // In parallel, so the caller's agents add no latency to the picker.
+  // In parallel, so the caller's agents add no latency to the picker. Older
+  // servers may not support this endpoint; its failure is handled below.
   const [catalog, userAgents] = await Promise.all([
     queryClient.fetchQuery({
       queryKey: AGENT_CATALOG_QUERY_KEY,
       queryFn: fetchAgentCatalog,
       staleTime: AVAILABLE_AGENTS_STALE_MS,
     }),
-    includeUserAgents
-      ? queryClient
-          .fetchQuery({
-            queryKey: USER_AGENTS_QUERY_KEY,
-            queryFn: fetchUserAgents,
-            staleTime: AVAILABLE_AGENTS_STALE_MS,
-          })
-          .catch(() => [] as AvailableAgent[])
-      : ([] as AvailableAgent[]),
+    queryClient
+      .fetchQuery({
+        queryKey: USER_AGENTS_QUERY_KEY,
+        queryFn: fetchUserAgents,
+        retry: false,
+        staleTime: AVAILABLE_AGENTS_STALE_MS,
+      })
+      .catch(() => [] as AvailableAgent[]),
   ]);
   const discovered = sessionAgents.map((agent) => ({
     agentId: agent.id,
@@ -474,8 +472,6 @@ function applyAcpHarnessCatalog(
 export function useAvailableAgents(options: UseAvailableAgentsOptions = {}) {
   const enabled = options.enabled ?? true;
   const sessionAgents = useSessionAgents(enabled);
-  const serverInfo = useServerInfo();
-  const includeUserAgents = serverInfo !== "loading" && serverInfo.agent_install === true;
   // Normalized, order-stable pin key so equivalent pin sets share one cache
   // entry and a caller's fresh array literal doesn't churn the query. Agent
   // ids never contain "," so the join is unambiguous.
@@ -520,7 +516,7 @@ export function useAvailableAgents(options: UseAvailableAgentsOptions = {}) {
   );
   const query = useQuery({
     // Recompute when the first 30 Mine sessions change; hover patches match the prefix.
-    queryKey: ["available-agents", pinnedKey, sessionAgents.data ?? null, includeUserAgents],
+    queryKey: ["available-agents", pinnedKey, sessionAgents.data ?? null],
     // fetchQuery dedupes with the catalog query's in-flight fetch, so the
     // merged fetch reuses (not repeats) the catalog request.
     queryFn: () =>
@@ -528,7 +524,6 @@ export function useAvailableAgents(options: UseAvailableAgentsOptions = {}) {
         pinnedKey === "" ? [] : pinnedKey.split(","),
         queryClient,
         sessionAgents.data ?? [],
-        includeUserAgents,
       ),
     enabled: enabled && (sessionAgents.data !== undefined || sessionAgents.isError),
     staleTime: AVAILABLE_AGENTS_STALE_MS,
