@@ -15,6 +15,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -4659,6 +4660,48 @@ async def _launch_codex_native_tui(
             args=loggable_launch_args,
         ),
     )
+    terminal_sandbox = agent_os_env.sandbox if agent_os_env is not None else None
+    if terminal_sandbox is not None and terminal_sandbox.type in {
+        "darwin_seatbelt",
+        "linux_bwrap",
+    }:
+        codex_home = app_server.codex_home
+        if codex_home != bridge_dir / "codex-home" or codex_home.is_symlink():
+            raise RuntimeError("Codex terminal home is outside its private session bridge")
+        hook_output = bridge_dir / "hook-output"
+        state_dirs = [
+            codex_home / "sessions",
+            codex_home / "tmp",
+            codex_home / "mcp-oauth-locks",
+            hook_output,
+        ]
+        for path in state_dirs:
+            if path.is_symlink():
+                raise RuntimeError("Codex terminal state path must not be a symlink")
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        state_files = sorted(
+            path
+            for path in codex_home.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and re.fullmatch(
+                r"(?:state|logs|queue|goals|memories)_[0-9]+\.sqlite(?:-(?:wal|shm))?",
+                path.name,
+            )
+        )
+        # Keep auth, config, hooks, and bridge bearer files read-only.
+        terminal_sandbox = dataclasses.replace(
+            terminal_sandbox,
+            read_paths=[*(terminal_sandbox.read_paths or []), str(bridge_dir)],
+            write_paths=[
+                *(terminal_sandbox.write_paths or []),
+                *(str(path) for path in state_dirs),
+            ],
+            write_files=[
+                *(terminal_sandbox.write_files or []),
+                *(str(path) for path in state_files),
+            ],
+        )
     terminal_view = await resource_registry.launch_auxiliary_terminal(
         session_id=session_id,
         terminal_name="codex",
@@ -4669,7 +4712,7 @@ async def _launch_codex_native_tui(
             os_env=OSEnvSpec(
                 type="caller_process",
                 cwd=workspace,
-                sandbox=(agent_os_env.sandbox if agent_os_env is not None else None),
+                sandbox=terminal_sandbox,
             ),
             command=codex_command,
             args=codex_launch_args,

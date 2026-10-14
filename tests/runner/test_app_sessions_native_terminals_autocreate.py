@@ -4152,6 +4152,174 @@ async def test_codex_tui_launch_reads_project_config_from_session_workspace(
     assert spec.os_env.cwd == str(workspace)
 
 
+@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "linux_bwrap", "none", None])
+@pytest.mark.asyncio
+async def test_codex_tui_grants_only_its_session_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sandbox_type: str | None,
+) -> None:
+    """Native Codex can use its private CODEX_HOME without granting peer bridges."""
+    from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+    from omnigent.runner.native.orchestration import (
+        _CodexNativeLaunchConfig,
+        _launch_codex_native_tui,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bridge_dir = tmp_path / "bridges" / "own"
+    bridge_dir.mkdir(parents=True)
+    codex_home = bridge_dir / "codex-home"
+    codex_home.mkdir()
+    for name in ("auth.json", "config.toml", "hooks.json"):
+        (codex_home / name).write_text("protected", encoding="utf-8")
+    (bridge_dir / "bridge.json").write_text("protected", encoding="utf-8")
+    (codex_home / "state_5.sqlite").write_text("state", encoding="utf-8")
+    monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
+    captured: dict[str, Any] = {}
+    app_server = SimpleNamespace(
+        listen_url="ws://127.0.0.1:9876",
+        config_overrides=[],
+        codex_cli_version=None,
+        codex_path="/opt/codex/bin/codex",
+        codex_home=codex_home,
+        env={},
+    )
+    sandbox = (
+        OSEnvSandboxSpec(
+            type=sandbox_type,
+            read_paths=["/existing/read"],
+            write_paths=["/existing/write"],
+        )
+        if sandbox_type is not None
+        else None
+    )
+    agent_spec = AgentSpec(
+        spec_version=1,
+        name="codex",
+        executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+        os_env=OSEnvSpec(type="caller_process", cwd=str(workspace), sandbox=sandbox),
+    )
+
+    await _launch_codex_native_tui(
+        "conv_codex_own_bridge",
+        _RecordingCodexRegistry(captured),  # type: ignore[arg-type]
+        lambda _sid, _evt: None,
+        app_server=app_server,  # type: ignore[arg-type]
+        launch_config=_CodexNativeLaunchConfig(
+            workspace=workspace,
+            policy_server_url="http://127.0.0.1:8000",
+            terminal_launch_args=None,
+            model_override=None,
+            external_session_id=None,
+            fork_source_id=None,
+            fork_source_external_id=None,
+            fork_carry_history=False,
+            bypass_sandbox=False,
+        ),
+        bridge_dir=bridge_dir,
+        thread_id=None,
+        agent_spec=agent_spec,
+    )
+
+    launched = captured["spec"].os_env.sandbox
+    if sandbox_type is None:
+        assert launched is None
+    else:
+        assert launched is not None
+        assert launched.type == sandbox_type
+        expected_read = ["/existing/read"]
+        expected = ["/existing/write"]
+        if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
+            expected_read.append(str(bridge_dir))
+            expected.extend(
+                str(path)
+                for path in (
+                    codex_home / "sessions",
+                    codex_home / "tmp",
+                    codex_home / "mcp-oauth-locks",
+                    bridge_dir / "hook-output",
+                )
+            )
+            assert launched.write_files == [str(codex_home / "state_5.sqlite")]
+        assert launched.read_paths == expected_read
+        assert launched.write_paths == expected
+        assert str(tmp_path / "bridges" / "peer") not in launched.write_paths
+        assert sandbox.write_paths == ["/existing/write"]
+        if sandbox_type == "darwin_seatbelt":
+            import subprocess
+            import sys
+
+            if sys.platform == "darwin":
+                from omnigent.inner.seatbelt_sandbox import (
+                    SeatbeltSandboxBackend,
+                    _build_profile,
+                )
+
+                peer_dir = tmp_path / "bridges" / "peer"
+                peer_dir.mkdir()
+                policy = SeatbeltSandboxBackend().resolve(captured["spec"].os_env, workspace)
+                profile = _build_profile(policy, workspace, argv=["/usr/bin/touch"])
+                own = subprocess.run(
+                    [
+                        "/usr/bin/sandbox-exec",
+                        "-p",
+                        profile,
+                        "/usr/bin/touch",
+                        str(codex_home / "sessions" / "probe"),
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                peer = subprocess.run(
+                    [
+                        "/usr/bin/sandbox-exec",
+                        "-p",
+                        profile,
+                        "/usr/bin/touch",
+                        str(peer_dir / "probe"),
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                assert own.returncode == 0
+                assert peer.returncode != 0
+                assert (codex_home / "sessions" / "probe").exists()
+                assert not (peer_dir / "probe").exists()
+                sqlite_write = subprocess.run(
+                    [
+                        "/usr/bin/sandbox-exec",
+                        "-p",
+                        profile,
+                        "/usr/bin/touch",
+                        str(codex_home / "state_5.sqlite"),
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                assert sqlite_write.returncode == 0
+                for protected in (
+                    bridge_dir / "bridge.json",
+                    codex_home / "auth.json",
+                    codex_home / "config.toml",
+                    codex_home / "hooks.json",
+                ):
+                    write = subprocess.run(
+                        [
+                            "/usr/bin/sandbox-exec",
+                            "-p",
+                            profile,
+                            "/usr/bin/touch",
+                            str(protected),
+                        ],
+                        capture_output=True,
+                        check=False,
+                    )
+                    assert write.returncode != 0
+                    assert protected.read_text(encoding="utf-8") == "protected"
+
+
 @pytest.mark.asyncio
 async def test_auto_create_claude_terminal_registers_permission_hook(
     tmp_path: Path,
