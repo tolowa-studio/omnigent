@@ -21,6 +21,7 @@ import httpx
 from omnigent.harnesses.claude_native.bridge import (
     BRIDGE_ID_LABEL_KEY,
     _call_relay_tool,
+    _mcp_error,
     _mcp_tool_schema_from_spec,
     _read_json_file,
     _read_relay_tool_specs,
@@ -302,7 +303,7 @@ def start_claude_native_ipc(
         return {"tools": [_mcp_tool_schema_from_spec(row) for row in specs]}
 
     async def tool_call(body: dict[str, Any]) -> dict[str, Any]:
-        await verify_active()
+        active = await verify_active()
         name = body.get("name")
         arguments = body.get("arguments")
         if not isinstance(name, str) or not isinstance(arguments, dict):
@@ -312,6 +313,30 @@ def start_claude_native_ipc(
         }
         if name not in allowed:
             raise ValueError("tool not in this session's active relay")
+        # The IPC capability is readable by the model's shell. Never let it
+        # dispatch a trusted relay tool without a fresh runner-side policy
+        # verdict bound to the AP-owned session and the exact arguments.
+        try:
+            with hold_approval_wait_marker(
+                approval_wait_marker_path(active, bridge_dir=bridge_dir)
+            ):
+                verdict = await server_client.post(
+                    f"/v1/sessions/{quote(active, safe='')}/policies/evaluate",
+                    json={
+                        "event": {
+                            "type": "PHASE_TOOL_CALL",
+                            "data": {"name": name, "arguments": arguments},
+                            "context": {"harness": "claude-native"},
+                        }
+                    },
+                    timeout=_PERMISSION_TIMEOUT_S,
+                )
+                verdict.raise_for_status()
+                decision = verdict.json()
+        except (httpx.HTTPError, ValueError):
+            return {"result": _mcp_error("tool policy unavailable")}
+        if not isinstance(decision, dict) or decision.get("result") != "POLICY_ACTION_ALLOW":
+            return {"result": _mcp_error("tool policy denied")}
         result = await asyncio.to_thread(_call_relay_tool, bridge_dir, name, arguments)
         return {"result": result}
 
@@ -358,6 +383,9 @@ def start_claude_native_ipc(
         config = _read_json_file(bridge_dir / "bridge.json")
         local_config = {key: config[key] for key in ("workspace", "sandbox") if key in config}
         _write_json_file(bridge_dir / "hook-ipc" / "local-tools.json", local_config)
+        # A durable runner-owned mode bit keeps marker locations stable after
+        # IPC teardown or a crash. The shell can read but cannot write it.
+        _write_json_file(bridge_dir / "hook-ipc" / "managed.json", {"version": 1})
         if marker_root.is_symlink():
             raise ValueError("Claude approval marker root must not be a symlink")
         marker_root.mkdir(mode=0o700, exist_ok=True)

@@ -41,6 +41,92 @@ from omnigent.runner.turn_routing import (
 )
 
 
+@pytest.mark.asyncio
+async def test_claude_ipc_relay_tool_requires_runner_policy_allow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnigent.runner import claude_native_ipc
+
+    socket_root = Path(tempfile.mkdtemp(prefix="nhi-", dir="/tmp"))
+    monkeypatch.setenv("OMNIGENT_NATIVE_IPC_ROOT", str(socket_root))
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    bridge_dir = tmp_path / "root" / "bridge"
+    bridge_dir.mkdir(parents=True)
+    _write_json_file(
+        bridge_dir / "bridge.json",
+        {"bridge_id": "bridge-a", "active_session_id": "session-a"},
+    )
+    monkeypatch.setattr(
+        claude_native_ipc,
+        "_read_relay_tool_specs",
+        lambda _bridge: [{"name": "sys_privileged"}],
+    )
+    dispatched: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        claude_native_ipc,
+        "_call_relay_tool",
+        lambda _bridge, name, args: (
+            dispatched.append((name, args)) or {"content": [{"type": "text", "text": "done"}]}
+        ),
+    )
+    verdict = "POLICY_ACTION_DENY"
+    evaluated: list[dict[str, object]] = []
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "runner_id": "runner-a",
+                    "labels": {claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a"},
+                },
+            )
+        assert req.url.path == "/v1/sessions/session-a/policies/evaluate"
+        evaluated.append(json.loads(req.content))
+        return httpx.Response(200, json={"result": verdict})
+
+    async with httpx.AsyncClient(
+        base_url="http://ap.test", transport=httpx.MockTransport(respond)
+    ) as client:
+        ipc = start_claude_native_ipc(
+            bridge_dir=bridge_dir,
+            bridge_id="bridge-a",
+            session_id="session-a",
+            expected_runner_id="runner-a",
+            server_client=client,
+            server_url="http://ap.test",
+        )
+        try:
+            payload = {"name": "sys_privileged", "arguments": {"command": "run"}}
+            denied = await asyncio.to_thread(
+                post_native_hook_ipc, bridge_dir, "/tool-call", payload
+            )
+            assert "denied" in json.dumps(denied)
+            assert dispatched == []
+            assert evaluated[-1]["event"]["data"] == {
+                "name": "sys_privileged",
+                "arguments": {"command": "run"},
+            }
+            verdict = "POLICY_ACTION_ALLOW"
+            allowed = await asyncio.to_thread(
+                post_native_hook_ipc, bridge_dir, "/tool-call", payload
+            )
+            assert allowed == {"result": {"content": [{"type": "text", "text": "done"}]}}
+            assert dispatched == [("sys_privileged", {"command": "run"})]
+            unknown = await asyncio.to_thread(
+                post_native_hook_ipc,
+                bridge_dir,
+                "/tool-call",
+                {"name": "outside", "arguments": {}},
+            )
+            assert unknown is None
+            assert len(dispatched) == 1
+        finally:
+            await asyncio.to_thread(ipc.close)
+            shutil.rmtree(socket_root)
+
+
 def test_claude_ipc_keeps_local_mcp_tools_without_exposing_bridge_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -130,6 +216,12 @@ async def test_claude_ipc_binds_backend_calls_to_ap_owned_session(
             local_config = json.loads((bridge_dir / "hook-ipc" / "local-tools.json").read_text())
             assert "backend-secret" not in json.dumps(local_config)
             assert local_config == {}
+            mcp_config = claude_bridge.build_mcp_config(bridge_dir)
+            mcp_server = next(iter(mcp_config["mcpServers"].values()))
+            assert mcp_server["env"]["OMNIGENT_NATIVE_HOOK_IPC"] == "1"
+            assert mcp_server["env"]["OMNIGENT_CLAUDE_MCP_SOCKET_DIR"] == str(
+                ipc.socket_dir / "mcp"
+            )
             assert await asyncio.to_thread(get_native_hook_ipc, bridge_dir) is not None
             result = await asyncio.to_thread(
                 post_native_hook_ipc,
@@ -304,6 +396,7 @@ def test_claude_observer_discovers_plain_assistant_message(
     bridge_dir = tmp_path / "root" / "bridge"
     bridge_dir.mkdir(parents=True)
     (bridge_dir / "hook-ipc").mkdir()
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
     record_hook_event(
         bridge_dir,
         {"hook_event_name": "Stop", "session_id": "claude-a", "transcript_path": str(transcript)},
@@ -328,7 +421,7 @@ def test_ipc_bridge_rejects_untrusted_transcript_pointer(
     bridge_dir = tmp_path / "root" / "bridge"
     (bridge_dir / "hook-output").mkdir(parents=True)
     (bridge_dir / "hook-ipc").mkdir()
-    (bridge_dir / "hook-ipc" / "runner-ipc.json").write_text("{}")
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
     claude_root = tmp_path / "claude"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_root))
     project = claude_root / "projects" / "project-a"
@@ -355,7 +448,7 @@ def test_runner_routing_writes_cannot_follow_hook_symlinks(tmp_path: Path) -> No
     output_dir = bridge_dir / "hook-output"
     output_dir.mkdir(parents=True)
     (bridge_dir / "hook-ipc").mkdir()
-    (bridge_dir / "hook-ipc" / "runner-ipc.json").write_text("{}")
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
     target = tmp_path / "protected.txt"
     target.write_text("keep me")
     (output_dir / "turn_routing.log").symlink_to(target)
@@ -435,6 +528,102 @@ def test_forged_hook_rotation_requires_runner_owned_receipt(
         )
         is None
     )
+    _write_json_file(
+        bridge_dir / "rotation.json",
+        {"kind": "clear", "old_session_id": "session-b", "new_session_id": "session-c"},
+    )
+    _write_json_file(bridge_dir / "bridge.json", {"active_session_id": "session-c"})
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="clear", previous_session_id="session-b", journal_target="session-c"
+        )
+        == "session-c"
+    )
+
+
+def test_approval_marker_refreshes_and_creates_narrow_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    monkeypatch.setattr(claude_bridge, "_APPROVAL_WAIT_ROOT", tmp_path / "root" / "approval-waits")
+    marker = claude_bridge.approval_wait_marker_path("session-a")
+    assert not marker.parent.exists()
+    claude_bridge.touch_approval_wait_marker(marker)
+    assert marker.is_file()
+    os.utime(marker, ns=(1_000_000_000, 1_000_000_000))
+    claude_bridge.touch_approval_wait_marker(marker)
+    assert marker.stat().st_mtime_ns > 1_000_000_000
+    assert claude_bridge.approval_wait_is_fresh("session-a")
+
+
+@pytest.mark.asyncio
+async def test_managed_fork_never_seeds_from_untrusted_transcript_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnigent.harnesses.claude_native import forwarder
+
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    claude_root = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_root))
+    bridge_dir = tmp_path / "root" / "bridge"
+    (bridge_dir / "hook-ipc").mkdir(parents=True)
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
+    _write_json_file(bridge_dir / "bridge.json", {"active_session_id": "session-b"})
+    _write_json_file(
+        bridge_dir / "rotation.json",
+        {"kind": "fork", "old_session_id": "session-a", "new_session_id": "session-b"},
+    )
+    outside = tmp_path / "secret.jsonl"
+    outside.write_text("secret\n")
+    record = SimpleNamespace(
+        event_cursor=1,
+        byte_offset=10,
+        fork_rotated_to="session-b",
+        transcript_path=outside,
+        claude_session_id="claude-b",
+    )
+    monkeypatch.setattr(
+        forwarder,
+        "_read_hook_events_for_state",
+        lambda _bridge, _state: SimpleNamespace(records=[record]),
+    )
+    monkeypatch.setattr(forwarder, "_jsonl_cursor_fingerprint", lambda *_a: None)
+
+    async def noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    seeded: list[Path | None] = []
+
+    async def seed(*, bridge_dir: Path, transcript_path: Path | None) -> None:
+        seeded.append(transcript_path)
+
+    monkeypatch.setattr(forwarder, "_write_hook_state_async", noop)
+    monkeypatch.setattr(forwarder, "_seed_fork_transcript_forward_state", seed)
+    async with httpx.AsyncClient(base_url="http://ap.test") as client:
+        rotated = await forwarder._maybe_rotate_session_on_fork(
+            client=client,
+            session_id="session-b",
+            previous_session_id="session-a",
+            bridge_dir=bridge_dir,
+            state=forwarder.HookForwardState(event_cursor=0),
+        )
+        assert rotated == "session-b"
+        assert seeded == []
+        own = claude_root / "projects" / "owned" / "claude-b.jsonl"
+        own.parent.mkdir(parents=True)
+        own.write_text("{}\n")
+        record.transcript_path = own
+        rotated = await forwarder._maybe_rotate_session_on_fork(
+            client=client,
+            session_id="session-b",
+            previous_session_id="session-a",
+            bridge_dir=bridge_dir,
+            state=forwarder.HookForwardState(event_cursor=0),
+        )
+        assert rotated == "session-b"
+        assert seeded == [own]
 
 
 def test_runner_notifier_rejects_spoofed_mcp_socket(tmp_path: Path) -> None:

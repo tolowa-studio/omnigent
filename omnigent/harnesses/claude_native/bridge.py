@@ -1507,7 +1507,7 @@ def approval_wait_marker_root(session_id: str, *, bridge_dir: Path | None = None
     """Return the marker root used by this bridge's permission hook."""
     if bridge_dir is None:
         return _APPROVAL_WAIT_ROOT / _approval_wait_digest(session_id)
-    if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+    if (bridge_dir / "hook-ipc" / "managed.json").is_file():
         # The managed permission callback lives in the trusted runner. A
         # sandbox-writable marker would let the model shell pin its own pane.
         return bridge_dir / _APPROVAL_WAIT_DIR_NAME
@@ -1547,6 +1547,7 @@ def touch_approval_wait_marker(marker: Path) -> None:
     :returns: None.
     """
     try:
+        _ensure_secure_dir(marker.parent)
         fd = os.open(
             marker,
             os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -1556,9 +1557,10 @@ def touch_approval_wait_marker(marker: Path) -> None:
             info = os.fstat(fd)
             if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                 os.ftruncate(fd, 0)
+                os.utime(fd, None)
         finally:
             os.close(fd)
-    except OSError:
+    except (OSError, RuntimeError):
         _logger.debug("Could not touch approval-wait marker", exc_info=True)
 
 
@@ -2181,6 +2183,17 @@ def build_mcp_config(bridge_dir: Path, *, python_executable: str | None = None) 
     :returns: JSON-serializable Claude MCP config.
     """
     python = python_executable or sys.executable
+    mcp_env = {
+        "PYTHONUNBUFFERED": "1",
+        "TMPDIR": str(bridge_dir / HOOK_OUTPUT_DIR / "tmp"),
+        _TRUSTED_PARENT_ENV: str(_TRUSTED_PARENT),
+    }
+    if (bridge_dir / "hook-ipc" / "managed.json").is_file():
+        advert = _read_json_file(bridge_dir / "hook-ipc" / "runner-ipc.json")
+        socket_path = advert.get("socket_path")
+        if isinstance(socket_path, str) and Path(socket_path).name == "runner-ipc.sock":
+            mcp_env["OMNIGENT_NATIVE_HOOK_IPC"] = "1"
+            mcp_env["OMNIGENT_CLAUDE_MCP_SOCKET_DIR"] = str(Path(socket_path).parent / "mcp")
     return {
         "mcpServers": {
             _MCP_SERVER_NAME: {
@@ -2193,11 +2206,7 @@ def build_mcp_config(bridge_dir: Path, *, python_executable: str | None = None) 
                     "--bridge-dir",
                     str(bridge_dir),
                 ],
-                "env": {
-                    "PYTHONUNBUFFERED": "1",
-                    "TMPDIR": str(bridge_dir / HOOK_OUTPUT_DIR / "tmp"),
-                    _TRUSTED_PARENT_ENV: str(_TRUSTED_PARENT),
-                },
+                "env": mcp_env,
             }
         }
     }
@@ -2921,13 +2930,18 @@ def read_transcript_path(bridge_dir: Path) -> Path | None:
     if not isinstance(raw, str) or not raw:
         return None
     path = Path(raw)
-    if not (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+    if not (bridge_dir / "hook-ipc" / "managed.json").is_file():
         return path
     # A sandboxed shell can edit hook-output/state.json. Never let that
     # pointer make the trusted forwarder read an arbitrary local file.
     claude_id = state.get("claude_session_id")
     if not isinstance(claude_id, str) or not claude_id:
         return None
+    return validated_claude_transcript_path(path, claude_id)
+
+
+def validated_claude_transcript_path(path: Path, claude_id: str) -> Path | None:
+    """Confine a journal-supplied transcript to this user's Claude project tree."""
     config_root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     transcript_root = config_root / "projects"
     try:
@@ -2936,7 +2950,11 @@ def read_transcript_path(bridge_dir: Path) -> Path | None:
         resolved = path.resolve(strict=True)
         resolved.relative_to(transcript_root.resolve(strict=True))
         stat_result = path.stat(follow_symlinks=False)
-        if not stat.S_ISREG(stat_result.st_mode) or stat_result.st_uid != os.getuid():
+        if (
+            not stat.S_ISREG(stat_result.st_mode)
+            or stat_result.st_uid != os.getuid()
+            or stat_result.st_nlink != 1
+        ):
             return None
     except (OSError, ValueError):
         return None

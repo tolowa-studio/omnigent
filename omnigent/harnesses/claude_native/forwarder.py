@@ -48,6 +48,7 @@ from omnigent.harnesses.claude_native.bridge import (
     transcript_has_forked_from_marker,
     transcript_has_recent_local_command,
     url_component,
+    validated_claude_transcript_path,
     write_active_session_id,
 )
 from omnigent.harnesses.claude_native.diagnostics import ClaudeDebugLogFollower
@@ -3231,7 +3232,7 @@ async def _maybe_rotate_session_on_clear(
     )
     new_session_id: str | None = None
     try:
-        if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        if (bridge_dir / "hook-ipc" / "managed.json").is_file():
             # Hook records are sandbox-writable. Managed rotations already
             # completed through runner IPC, so the trusted bridge identity is
             # the only admissible rotated-to value. Never create a session
@@ -3417,7 +3418,15 @@ async def _maybe_rotate_session_on_fork(
         avoid a re-rotation loop).
     """
     result = await asyncio.to_thread(_read_hook_events_for_state, bridge_dir, state)
-    fork_record = next((record for record in result.records if _is_fork_hook_record(record)), None)
+    managed = (bridge_dir / "hook-ipc" / "managed.json").is_file()
+    fork_record = next(
+        (
+            record
+            for record in result.records
+            if (bool(record.fork_rotated_to) if managed else _is_fork_hook_record(record))
+        ),
+        None,
+    )
     if fork_record is None:
         return None
 
@@ -3436,7 +3445,7 @@ async def _maybe_rotate_session_on_fork(
     )
     new_session_id: str | None = None
     try:
-        if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        if (bridge_dir / "hook-ipc" / "managed.json").is_file():
             new_session_id = _managed_rotation_target(
                 bridge_dir,
                 kind="fork",
@@ -3461,7 +3470,17 @@ async def _maybe_rotate_session_on_fork(
             extra={"session_id": session_id},
         )
     await _write_hook_state_async(bridge_dir, durable)
-    if new_session_id is not None:
+    if new_session_id is not None and (
+        not managed
+        or (
+            fork_record.transcript_path is not None
+            and isinstance(fork_record.claude_session_id, str)
+            and validated_claude_transcript_path(
+                fork_record.transcript_path, fork_record.claude_session_id
+            )
+            is not None
+        )
+    ):
         await _seed_fork_transcript_forward_state(
             bridge_dir=bridge_dir,
             transcript_path=fork_record.transcript_path,

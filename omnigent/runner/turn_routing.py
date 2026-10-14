@@ -143,7 +143,7 @@ def _hook_state_path(bridge_dir: Path, filename: str) -> Path:
     # The IPC route callback runs in the trusted runner. Its replay marker
     # must not be writable by the sandboxed model shell: that would let a
     # forged marker satisfy the block/replay handshake.
-    if filename == MARKER_FILE and (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+    if filename == MARKER_FILE and (bridge_dir / "hook-ipc" / "managed.json").is_file():
         return bridge_dir / filename
     output_dir = bridge_dir / "hook-output"
     return (output_dir if output_dir.is_dir() else bridge_dir) / filename
