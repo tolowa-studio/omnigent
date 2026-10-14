@@ -263,7 +263,7 @@ def post_native_hook_ipc(
             )
             response.raise_for_status()
             result = response.json()
-    except (OSError, ValueError, KeyError, httpx.HTTPError):
+    except (OSError, ValueError, KeyError, TypeError, httpx.HTTPError):
         return None
     return result if isinstance(result, dict) else None
 
