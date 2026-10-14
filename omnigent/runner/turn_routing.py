@@ -129,6 +129,17 @@ PENDING_FILE = "turn_replay_pending.json"
 #: identically in the logs. This file separates them.
 TRACE_FILE = "turn_routing.log"
 
+
+def _hook_state_path(bridge_dir: Path, filename: str) -> Path:
+    """Keep hook-written files in this bridge's private output directory.
+
+    Older bridges predate the directory and retain their original paths until
+    they are prepared again. New bridge preparation creates ``hook-output``
+    before launching the sandboxed child.
+    """
+    output_dir = bridge_dir / "hook-output"
+    return (output_dir if output_dir.is_dir() else bridge_dir) / filename
+
 #: Path served by the loopback relay.
 ROUTE_PATH_TEMPLATE = "/v1/sessions/{session_id}/route-turn"
 
@@ -248,7 +259,7 @@ def trace_turn_routing(bridge_dir: Path, outcome: str, detail: str = "") -> None
         separators=(",", ":"),
     )
     try:
-        with (bridge_dir / TRACE_FILE).open("a", encoding="utf-8") as handle:
+        with _hook_state_path(bridge_dir, TRACE_FILE).open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
     except OSError:
         pass
@@ -385,7 +396,7 @@ def write_turn_routing_marker(
     """
     body = {"session_id": session_id, "decision_id": decision_id, "at": time.time()}
     try:
-        (bridge_dir / MARKER_FILE).write_text(json.dumps(body), encoding="utf-8")
+        _hook_state_path(bridge_dir, MARKER_FILE).write_text(json.dumps(body), encoding="utf-8")
     except OSError:
         return False
     return True
@@ -399,7 +410,7 @@ def turn_routing_marker_session(bridge_dir: Path) -> str | None:
         unreadable, or it predates the scoping (a bare file).
     """
     try:
-        raw = json.loads((bridge_dir / MARKER_FILE).read_text(encoding="utf-8"))
+        raw = json.loads(_hook_state_path(bridge_dir, MARKER_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return _opt_str(raw.get("session_id")) if isinstance(raw, dict) else None

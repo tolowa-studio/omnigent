@@ -7586,7 +7586,10 @@ def create_runner_app(
         and _pane_reaper_registry is not None
         and hasattr(_pane_reaper_registry, "native_panes")
     ):
-        from omnigent.harnesses.claude_native.bridge import approval_wait_is_fresh
+        from omnigent.harnesses.claude_native.bridge import (
+            approval_wait_is_fresh,
+            bridge_dir_from_launch_args,
+        )
         from omnigent.native.native_cost_popup import (
             _tmux_last_client_input_at,
             _tmux_window_activity_at,
@@ -7619,7 +7622,13 @@ def create_runner_app(
             # A pane parked on a permission prompt emits nothing and reports no
             # active turn, so every signal above reads idle. Reaping it kills the
             # prompt and strands its approval card unanswerable.
-            if approval_wait_is_fresh(conv_id):
+            instance = _pane_reaper_registry.get(conv_id, pane.terminal_name, "main")
+            bridge_dir = (
+                bridge_dir_from_launch_args(getattr(instance, "args", []))
+                if pane.terminal_name == "claude" and instance is not None
+                else None
+            )
+            if approval_wait_is_fresh(conv_id, bridge_dir=bridge_dir):
                 return True
             # An attached viewer alone does not spare the pane (a tab left open
             # overnight kept idle native stacks resident). Count it only when a
@@ -7629,7 +7638,6 @@ def create_runner_app(
             )
             if input_at is not None and time.time() - input_at < PANE_OUTPUT_BUSY_WINDOW_S:
                 return True
-            instance = _pane_reaper_registry.get(conv_id, pane.terminal_name, "main")
             if instance is not None and instance.client_interaction_within(
                 PANE_OUTPUT_BUSY_WINDOW_S
             ):

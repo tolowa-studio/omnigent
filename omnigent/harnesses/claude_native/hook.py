@@ -19,6 +19,7 @@ from omnigent.harnesses.claude_native.bridge import (
     CLAUDE_FRAMEWORK_CONTEXT_FILE,
     approval_wait_marker_path,
     hold_approval_wait_marker,
+    hook_output_read_path,
     read_active_session_id,
     read_bridge_id,
     read_claude_session_id,
@@ -1112,7 +1113,7 @@ def _main_framework_context(argv: list[str]) -> int:
     """Add pending framework context to one submitted prompt."""
     args = _parse_evaluate_policy_args(argv)
     sys.stdin.read()
-    path = Path(args.bridge_dir) / CLAUDE_FRAMEWORK_CONTEXT_FILE
+    path = hook_output_read_path(Path(args.bridge_dir), CLAUDE_FRAMEWORK_CONTEXT_FILE)
     try:
         text = path.read_text(encoding="utf-8")
         path.unlink(missing_ok=True)

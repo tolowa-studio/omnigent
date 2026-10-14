@@ -510,7 +510,7 @@ async def test_rejected_hook_status_keeps_delivery_failure_identity(tmp_path: Pa
                     response_id="resp_synthetic",
                 )
                 assert state.event_cursor == attempt
-            assert state.byte_offset == (bridge_dir / "hooks.jsonl").stat().st_size
+            assert state.byte_offset == (bridge_dir / "hook-output" / "hooks.jsonl").stat().st_size
 
     assert [request["type"] for request in requests] == ["external_session_status"] * 6
     assert [request["data"]["status"] for request in requests] == ["idle", "idle", "failed"] * 2

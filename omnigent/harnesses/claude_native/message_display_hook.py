@@ -81,7 +81,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     line = json.dumps(record, separators=(",", ":")) + "\n"
-    path = os.path.join(args.bridge_dir, MESSAGE_DELTAS_FILE)
+    output_dir = os.path.join(args.bridge_dir, "hook-output")
+    path = os.path.join(
+        output_dir if os.path.isdir(output_dir) else args.bridge_dir,
+        MESSAGE_DELTAS_FILE,
+    )
     try:
         # O_APPEND makes a single short-line write atomic on POSIX, so
         # concurrent per-chunk hook subprocesses never interleave their

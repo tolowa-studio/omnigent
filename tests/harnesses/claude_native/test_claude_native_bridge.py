@@ -12475,13 +12475,44 @@ def test_approval_wait_marker_tracks_a_parked_permission_hook(
     # The hook clears on exit, so clearing an absent marker must not raise.
     claude_native_bridge.clear_approval_wait_marker(marker)
 
-    # A hook subprocess derives the root from the bridge dir it was handed,
-    # which must land on the same path the runner-side reaper checks.
+    # A hook subprocess and the pane reaper derive the same per-bridge root.
     bridge_dir = tmp_path / "omnigent-test" / "approval-parent" / "abc123"
-    assert (
-        claude_native_bridge.approval_wait_marker_path("conv_wait", bridge_dir=bridge_dir)
-        == marker
+    bridge_marker = claude_native_bridge.approval_wait_marker_path(
+        "conv_wait", bridge_dir=bridge_dir
     )
+    assert bridge_marker.parent == bridge_dir / "hook-output" / "approval-waits"
+    bridge_marker.parent.mkdir(parents=True)
+    claude_native_bridge.touch_approval_wait_marker(bridge_marker)
+    assert claude_native_bridge.approval_wait_is_fresh("conv_wait", bridge_dir=bridge_dir)
+    assert not claude_native_bridge.approval_wait_is_fresh("conv_other", bridge_dir=bridge_dir)
+
+
+def test_hook_output_survives_session_rotation_without_rewriting_bridge_config(
+    tmp_path: Path,
+) -> None:
+    """A live pane's private grant remains valid after /clear or /fork."""
+    from omnigent.runner.turn_routing import (
+        MARKER_FILE,
+        TRACE_FILE,
+        trace_turn_routing,
+        turn_routing_marker_present,
+        write_turn_routing_marker,
+    )
+
+    bridge_dir = prepare_bridge_dir("conv_original", workspace=tmp_path)
+    config_path = bridge_dir / "bridge.json"
+    original_config = config_path.read_bytes()
+    claude_native_bridge.write_active_session_id(bridge_dir, "conv_replacement")
+
+    assert config_path.read_bytes() == original_config
+    assert claude_native_bridge.read_active_session_id(bridge_dir) == "conv_replacement"
+    assert (bridge_dir / "hook-output" / "active_session.json").is_file()
+    assert write_turn_routing_marker(bridge_dir, session_id="conv_replacement")
+    assert turn_routing_marker_present(bridge_dir, "conv_replacement")
+    assert not turn_routing_marker_present(bridge_dir, "conv_original")
+    assert (bridge_dir / "hook-output" / MARKER_FILE).is_file()
+    trace_turn_routing(bridge_dir, "allow", "rotated")
+    assert (bridge_dir / "hook-output" / TRACE_FILE).is_file()
 
 
 def test_hold_approval_wait_marker_refreshes_until_released(
