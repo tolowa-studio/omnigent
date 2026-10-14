@@ -177,7 +177,8 @@ DEFAULT_BRIDGE_PORT_POOL: tuple[int, ...] = tuple(range(28700, 28716))
 # trusted parent (`/tmp`) is shared; everything under
 # `_BRIDGE_ROOT_PARENT` must be owned by the current uid and not be a
 # symlink — see :func:`_ensure_secure_dir`.
-_TRUSTED_PARENT = Path(tempfile.gettempdir())
+_TRUSTED_PARENT_ENV = "OMNIGENT_CLAUDE_TRUSTED_TMP_PARENT"
+_TRUSTED_PARENT = Path(os.environ.get(_TRUSTED_PARENT_ENV) or tempfile.gettempdir())
 _BRIDGE_ROOT_PARENT = _TRUSTED_PARENT / f"omnigent-{stable_user_id()}"
 _BRIDGE_ROOT = _BRIDGE_ROOT_PARENT / "claude-native"
 # Markers for permission hooks parked on a verdict, keyed by SESSION id: the
@@ -197,7 +198,6 @@ APPROVAL_WAIT_MARKER_REFRESH_S = 60.0
 # reads stale; a hook killed mid-wait leaves a marker that expires on its own.
 APPROVAL_WAIT_MARKER_TTL_S = 420.0
 _CONFIG_FILE = "bridge.json"
-_ACTIVE_SESSION_FILE = "active_session.json"
 _SERVER_FILE = "server.json"
 # Control socket of one ``serve-mcp`` process under the harness socket root,
 # named by owner pid so a socket left behind by a dead process can be reaped.
@@ -1733,6 +1733,7 @@ def prepare_bridge_dir(
         # bridge dir just validated rather than read from the module global, so it
         # lands in the same tree the caller asked for.
         _ensure_secure_dir(bridge_dir / HOOK_OUTPUT_DIR)
+        _ensure_secure_dir(bridge_dir / HOOK_OUTPUT_DIR / "tmp")
         _ensure_secure_dir(approval_wait_marker_root(conversation_id, bridge_dir=bridge_dir))
         config = _read_json_file(bridge_dir / _CONFIG_FILE)
         token = config.get("token") if isinstance(config, dict) else None
@@ -1769,7 +1770,6 @@ def prepare_bridge_dir(
             _STATE_FILE,
             _HOOKS_FILE,
             OBSERVER_HOOK_STDERR_FILE,
-            _ACTIVE_SESSION_FILE,
             MESSAGE_DELTAS_FILE,
             CONTEXT_RAW_FILE,
             _CONTEXT_FILE,
@@ -1944,10 +1944,13 @@ def read_active_session_id(bridge_dir: Path) -> str | None:
     :returns: Active Omnigent session id, e.g. ``"conv_abc123"``, or
         ``None`` when the bridge config is absent or malformed.
     """
-    active_state = _read_json_file(hook_output_read_path(bridge_dir, _ACTIVE_SESSION_FILE))
-    active = active_state.get("active_session_id")
-    if isinstance(active, str) and active:
-        return active
+    # The native terminal cannot read runner-owned bridge.json. Its hook
+    # subprocesses obtain the active identity from the session-bound runner.
+    if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
+        from omnigent.runner.native_hook_ipc import get_native_hook_ipc
+
+        active = (get_native_hook_ipc(bridge_dir) or {}).get("session_id")
+        return active if isinstance(active, str) and active else None
     config = _read_json_file(bridge_dir / _CONFIG_FILE)
     if not isinstance(config, dict):
         return None
@@ -2113,10 +2116,10 @@ def write_active_session_id(bridge_dir: Path, session_id: str) -> None:
     config = _read_json_file(bridge_dir / _CONFIG_FILE)
     if not config:
         raise RuntimeError(f"bridge config missing: {bridge_dir / _CONFIG_FILE}")
-    _write_json_file(
-        hook_output_path(bridge_dir, _ACTIVE_SESSION_FILE),
-        {"active_session_id": session_id, "updated_at": time.time()},
-    )
+    config["active_session_id"] = session_id
+    config["conversation_id"] = session_id
+    config["updated_at"] = time.time()
+    _write_json_file(bridge_dir / _CONFIG_FILE, config)
 
 
 def read_permission_hook_config(bridge_dir: Path) -> _JsonObject:
@@ -2178,24 +2181,25 @@ def build_mcp_config(bridge_dir: Path, *, python_executable: str | None = None) 
                 ],
                 "env": {
                     "PYTHONUNBUFFERED": "1",
-                    # The bridge root is derived from tempfile at import time.
-                    # Keep it aligned with the runner when Claude inherits a
-                    # different TMPDIR from the user's shell.
-                    "TMPDIR": str(_TRUSTED_PARENT),
+                    "TMPDIR": str(bridge_dir / HOOK_OUTPUT_DIR / "tmp"),
+                    _TRUSTED_PARENT_ENV: str(_TRUSTED_PARENT),
                 },
             }
         }
     }
 
 
-def _pin_runner_tmpdir(command: str) -> str:
-    """Run a generated command with the runner's temp root."""
-    return f"env TMPDIR={shlex.quote(str(_TRUSTED_PARENT))} {command}"
+def _pin_runner_tmpdir(command: str, bridge_dir: Path) -> str:
+    """Give sandboxed hooks private scratch while retaining bridge identity."""
+    return (
+        f"env TMPDIR={shlex.quote(str(bridge_dir / HOOK_OUTPUT_DIR / 'tmp'))} "
+        f"{_TRUSTED_PARENT_ENV}={shlex.quote(str(_TRUSTED_PARENT))} {command}"
+    )
 
 
-def _python_hook_command(parts: list[str]) -> str:
+def _python_hook_command(parts: list[str], bridge_dir: Path) -> str:
     """Build a Python hook command pinned to the runner's temp root."""
-    return _pin_runner_tmpdir(shlex.join(parts))
+    return _pin_runner_tmpdir(shlex.join(parts), bridge_dir)
 
 
 def build_hook_settings(
@@ -2212,6 +2216,7 @@ def build_hook_settings(
     launch_effort: str | None = None,
     subagent_router_dir: Path | None = None,
     turn_routing: bool = False,
+    runner_ipc: bool = False,
 ) -> _JsonObject:
     """
     Build invocation-local Claude Code hook settings.
@@ -2285,7 +2290,7 @@ def build_hook_settings(
     # Claude owns command-hook stderr, so it does not reach the runner logs.
     # Persist it for the forwarder to relay with the Omnigent session id.
     observer_stderr = shlex.quote(str(hook_output_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)))
-    command = f"{_python_hook_command(command_parts)} 2>> {observer_stderr}"
+    command = f"{_python_hook_command(command_parts, bridge_dir)} 2>> {observer_stderr}"
     hook = {"type": "command", "command": command}
     framework_context_parts = [
         python,
@@ -2298,7 +2303,9 @@ def build_hook_settings(
     ]
     framework_context_hook = {
         "type": "command",
-        "command": f"{_python_hook_command(framework_context_parts)} 2>> {observer_stderr}",
+        "command": (
+            f"{_python_hook_command(framework_context_parts, bridge_dir)} 2>> {observer_stderr}"
+        ),
     }
     session_start_hook = {
         "type": "command",
@@ -2372,19 +2379,20 @@ def build_hook_settings(
     from omnigent.native.tool_observer_hook import hook_settings
 
     observer_hook = hook_settings(bridge_dir, python, "omnigent.harnesses.claude_native.hook")
-    observer_hook["command"] = _pin_runner_tmpdir(cast(str, observer_hook["command"]))
+    observer_hook["command"] = _pin_runner_tmpdir(cast(str, observer_hook["command"]), bridge_dir)
     hooks["PostToolUse"].append({"hooks": [observer_hook]})
     if turn_routing:
         hooks["UserPromptSubmit"].append({"hooks": [_claude_route_turn_hook(bridge_dir, python)]})
-    if ap_server_url:
-        _write_json_file(
-            bridge_dir / _PERMISSION_HOOK_FILE,
-            {
-                "ap_server_url": ap_server_url,
-                "ap_auth_headers": ap_auth_headers or {},
-                "updated_at": time.time(),
-            },
-        )
+    if ap_server_url or runner_ipc:
+        if not runner_ipc:
+            _write_json_file(
+                bridge_dir / _PERMISSION_HOOK_FILE,
+                {
+                    "ap_server_url": ap_server_url,
+                    "ap_auth_headers": ap_auth_headers or {},
+                    "updated_at": time.time(),
+                },
+            )
         # ``PermissionRequest`` fires only when Claude is about to
         # show its TUI permission prompt — that's exactly the
         # interception point we want for routing to the web UI.
@@ -2404,7 +2412,7 @@ def build_hook_settings(
         ]
         permission_hook: _JsonObject = {
             "type": "command",
-            "command": _python_hook_command(permission_command_parts),
+            "command": _python_hook_command(permission_command_parts, bridge_dir),
             # Wait up to a day for the verdict. Claude Code's default
             # command-hook timeout (~60s) would otherwise kill the hook
             # subprocess long before the user answers, putting the
@@ -2437,7 +2445,8 @@ def build_hook_settings(
                 "evaluate-policy",
                 "--bridge-dir",
                 str(bridge_dir),
-            ]
+            ],
+            bridge_dir,
         )
         evaluate_policy_command = (
             "p=$(cat); "
@@ -2449,6 +2458,8 @@ def build_hook_settings(
             "&& { printf '%s' \"$out\"; exit 0; }; fi; "
             f"printf '%s' \"$p\" | {evaluate_policy_python}"
         )
+        if runner_ipc:
+            evaluate_policy_command = evaluate_policy_python
         evaluate_policy_hook: _JsonObject = {
             "type": "command",
             "command": evaluate_policy_command,
@@ -2493,7 +2504,7 @@ def build_hook_settings(
 
         router_hook: _JsonObject = {
             "type": "command",
-            "command": _python_hook_command(router_command_parts),
+            "command": _python_hook_command(router_command_parts, bridge_dir),
             # Outermost hop of the routing timeout budget documented in
             # ``omnigent.runner.subagent_routing``: derived from the hook
             # script's own request budget so it always exceeds it and the
@@ -2578,7 +2589,8 @@ def _claude_route_turn_hook(bridge_dir: Path, python: str) -> _JsonObject:
                 str(bridge_dir),
                 "--harness",
                 "claude-native",
-            ]
+            ],
+            bridge_dir,
         ),
         # Outermost hop of the timeout ladder in ``omnigent.runner.turn_routing``:
         # it must exceed the hook script's own request budget so the script's
@@ -2626,6 +2638,7 @@ def augment_claude_args(
     allowed_tools: tuple[str, ...] = (),
     subagent_router_dir: Path | None = None,
     turn_routing: bool = False,
+    runner_ipc: bool = False,
 ) -> list[str]:
     """
     Return Claude CLI args with Omnigent MCP/hook/skill injection.
@@ -2695,6 +2708,7 @@ def augment_claude_args(
         launch_effort=_arg_value(claude_args, "--effort"),
         subagent_router_dir=subagent_router_dir,
         turn_routing=turn_routing,
+        runner_ipc=runner_ipc,
     )
     args = _merge_disallowed_tools(list(claude_args), _OMNIGENT_DISALLOWED_TOOLS)
     args = _merge_allowed_tools(args, allowed_tools)
@@ -2892,7 +2906,27 @@ def read_transcript_path(bridge_dir: Path) -> Path | None:
     raw = state.get("transcript_path") if isinstance(state, dict) else None
     if not isinstance(raw, str) or not raw:
         return None
-    return Path(raw)
+    path = Path(raw)
+    if not (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        return path
+    # A sandboxed shell can edit hook-output/state.json. Never let that
+    # pointer make the trusted forwarder read an arbitrary local file.
+    claude_id = state.get("claude_session_id")
+    if not isinstance(claude_id, str) or not claude_id:
+        return None
+    config_root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    transcript_root = config_root / "projects"
+    try:
+        if path.name != f"{claude_id}.jsonl" or path.is_symlink():
+            return None
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(transcript_root.resolve(strict=True))
+        stat_result = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(stat_result.st_mode) or stat_result.st_uid != os.getuid():
+            return None
+    except (OSError, ValueError):
+        return None
+    return path
 
 
 def read_claude_session_id(bridge_dir: Path) -> str | None:
@@ -6366,6 +6400,26 @@ def _serve_mcp(bridge_dir: Path) -> None:
     :returns: None when stdin closes.
     """
     os.environ[BRIDGE_DIR_ENV_VAR] = str(bridge_dir)
+    if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
+        # The terminal shares a sandbox with this stdio child. Do not load
+        # bridge.json (which contains backend credentials) into either one.
+        notification_queue: queue.Queue[_JsonObject | None] = queue.Queue()
+        stdout_lock = threading.Lock()
+        httpd = _start_http_ingress(bridge_dir, secrets.token_urlsafe(32), notification_queue)
+        writer = threading.Thread(
+            target=_notification_writer,
+            args=(notification_queue, stdout_lock),
+            name="claude-native-mcp-writer",
+            daemon=True,
+        )
+        writer.start()
+        try:
+            _stdio_jsonrpc_loop({}, stdout_lock, bridge_dir)
+        finally:
+            notification_queue.put(None)
+            httpd.shutdown()
+            httpd.server_close()
+        return
     config = _read_json_file(bridge_dir / _CONFIG_FILE)
     if not isinstance(config, dict):
         raise SystemExit(f"bridge config missing: {bridge_dir / _CONFIG_FILE}")
@@ -6426,7 +6480,10 @@ def _start_http_ingress(
         httpd, advertised_url = _start_bridge_http_server(handler_cls)
         server_info["url"] = advertised_url
     else:
-        httpd, socket_path = _start_unix_control_server(handler_cls)
+        private_socket_root = os.environ.get("OMNIGENT_CLAUDE_MCP_SOCKET_DIR")
+        httpd, socket_path = _start_unix_control_server(
+            handler_cls, root=Path(private_socket_root) if private_socket_root else None
+        )
         server_info["socket"] = str(socket_path)
     _write_json_file(hook_output_path(bridge_dir, _SERVER_FILE), server_info)
     thread = threading.Thread(
@@ -6440,6 +6497,8 @@ def _start_http_ingress(
 
 def _start_unix_control_server(
     handler_cls: type[BaseHTTPRequestHandler],
+    *,
+    root: Path | None = None,
 ) -> tuple[socketserver.BaseServer, Path]:
     """
     Bind the control server to a Unix domain socket and return it with the path.
@@ -6458,7 +6517,7 @@ def _start_unix_control_server(
     from omnigent.inner._proc import process_alive
     from omnigent.runtime.harnesses.paths import resolve_harness_tmp_parent
 
-    root = resolve_harness_tmp_parent()
+    root = root or resolve_harness_tmp_parent()
     # A configured root may be nested (``OMNIGENT_HARNESS_TMP_PARENT=.tmp/oa``);
     # only the leaf must be owner-only.
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -7074,6 +7133,8 @@ def _is_relay_tool_call(params: object, bridge_dir: Path) -> bool:
     """
     if not isinstance(params, dict):
         return False
+    if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
+        return True
     name = params.get("name")
     if not isinstance(name, str) or not name:
         return False
@@ -7283,6 +7344,14 @@ def _combined_mcp_tool_schemas(
         local tools with the same name so calls flow through Omnigent and
         appear in the Omnigent event stream during web turns.
     """
+    if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
+        from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+        result = post_native_hook_ipc(bridge_dir, "/tool-list", {})
+        raw_tools = (result or {}).get("tools")
+        if not isinstance(raw_tools, list):
+            return []
+        return [row for row in raw_tools if isinstance(row, dict)]
     schemas = {name: _mcp_tool_schema(tool) for name, tool in local_tools.items()}
     for tool_spec in _read_relay_tool_specs(bridge_dir):
         name = tool_spec.get("name")
@@ -7333,6 +7402,17 @@ def _call_mcp_tool(
         return _mcp_error(f"unknown tool: {name!r}")
     if not isinstance(arguments, dict):
         arguments = {}
+    if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
+        from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+        response = post_native_hook_ipc(
+            bridge_dir,
+            "/tool-call",
+            {"name": name, "arguments": arguments},
+            timeout=_TOOL_RELAY_POST_TIMEOUT_S,
+        )
+        result = (response or {}).get("result")
+        return result if isinstance(result, dict) else _mcp_error("runner tool relay unavailable")
     if name in _read_relay_tool_names(bridge_dir):
         return _call_relay_tool(bridge_dir, name, arguments)
     if name not in tools:

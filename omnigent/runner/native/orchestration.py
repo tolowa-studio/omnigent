@@ -8191,6 +8191,9 @@ async def _auto_create_claude_terminal(
     from pathlib import Path
 
     from omnigent.harnesses.claude_native.bridge import (
+        _TRUSTED_PARENT as _claude_trusted_parent,
+    )
+    from omnigent.harnesses.claude_native.bridge import (
         BRIDGE_ID_LABEL_KEY,
         augment_claude_args,
         ensure_claude_workspace_trusted,
@@ -8240,18 +8243,18 @@ async def _auto_create_claude_terminal(
         # From this point this terminal owns the bridge, so later first-turn
         # helpers must observe the normalized id selected here.
         session_init.snapshot.labels[BRIDGE_ID_LABEL_KEY] = bridge_id
-    else:
-        try:
-            await server_client.patch(
-                f"/v1/sessions/{urllib.parse.quote(session_id, safe='')}",
-                json={"labels": {BRIDGE_ID_LABEL_KEY: bridge_id}},
-                params={"include_usage": "false"},
-            )
-        except httpx.HTTPError:
-            _logger.debug(
-                "Could not set bridge_id label for %s; relay may target wrong dir",
-                session_id,
-            )
+    # Session-init labels are a snapshot, not a persisted AP update. The
+    # runner IPC owner check needs this label on the actual session row.
+    try:
+        label_response = await server_client.patch(
+            f"/v1/sessions/{urllib.parse.quote(session_id, safe='')}",
+            json={"labels": {BRIDGE_ID_LABEL_KEY: bridge_id}},
+            params={"include_usage": "false"},
+        )
+        label_response.raise_for_status()
+    except httpx.HTTPError:
+        _logger.warning("Could not persist Claude bridge label for %s", session_id)
+        raise
     # Capture the previous claude_session_id from the bridge state file BEFORE
     # prepare_bridge_dir unlinks it. read_claude_session_id reads _STATE_FILE,
     # which prepare_bridge_dir removes as part of its refresh; reading it here
@@ -8821,6 +8824,21 @@ async def _auto_create_claude_terminal(
         server_client=server_client,
         turn_routing=launch_metadata.turn_routing,
     )
+    from omnigent.runner.claude_native_ipc import start_claude_native_ipc
+    from omnigent.runner.identity import RUNNER_ID_ENV_VAR
+
+    expected_runner_id = os.environ.get(RUNNER_ID_ENV_VAR, "")
+    _claude_hook_ipc = start_claude_native_ipc(
+        bridge_dir=bridge_dir,
+        bridge_id=bridge_id,
+        session_id=session_id,
+        expected_runner_id=expected_runner_id,
+        server_client=server_client,
+        server_url=server_url,
+        turn_router=_claude_turn_router,
+    )
+    _claude_mcp_socket_dir = _claude_hook_ipc.socket_dir / "mcp"
+    _claude_mcp_socket_dir.mkdir(mode=0o700)
     # Crash recovery for a blocked-but-never-replayed prompt is not wired here:
     # the pending record on disk is the seam if it ever is, and the recovery's
     # default readiness probe waits on a codex bridge thread.
@@ -8837,7 +8855,8 @@ async def _auto_create_claude_terminal(
         bridge_dir=bridge_dir,
         workspace=Path(workspace),
         ap_server_url=server_url,
-        ap_auth_headers=_runner_headers,
+        ap_auth_headers=None,
+        runner_ipc=True,
         bundle_dir=bundle_dir,
         agent_name=agent_name,
         skills_filter=skills_filter,
@@ -8893,10 +8912,18 @@ async def _auto_create_claude_terminal(
         # config and hook commands read-only; only mutable hook output is writable.
         terminal_sandbox = dataclasses.replace(
             terminal_sandbox,
-            read_paths=[*(terminal_sandbox.read_paths or []), str(bridge_dir)],
+            read_paths=[
+                *(terminal_sandbox.read_paths or []),
+                str(bridge_dir / "claude-settings.json"),
+                str(bridge_dir / HOOK_OUTPUT_DIR),
+                str(_claude_hook_ipc.socket_dir),
+                str(_claude_mcp_socket_dir),
+                str(bridge_dir / "hook-ipc"),
+            ],
             write_paths=[
                 *(terminal_sandbox.write_paths or []),
                 str(bridge_dir / HOOK_OUTPUT_DIR),
+                str(_claude_mcp_socket_dir),
             ],
         )
 
@@ -8917,7 +8944,31 @@ async def _auto_create_claude_terminal(
         # Tool Search env plus ucode gateway env (ANTHROPIC_BASE_URL
         # etc.) when derived. Empty provider config still forces
         # ENABLE_TOOL_SEARCH=true so MCP schemas are loaded on demand.
-        env=build_native_claude_terminal_env(claude_config),
+        env={
+            **{
+                key: os.environ[key]
+                for key in (
+                    "PATH",
+                    "HOME",
+                    "USER",
+                    "LOGNAME",
+                    "SHELL",
+                    "LANG",
+                    "LC_ALL",
+                    "TERM",
+                    "COLORTERM",
+                    "CLAUDE_CONFIG_DIR",
+                    "XDG_CONFIG_HOME",
+                    "XDG_DATA_HOME",
+                )
+                if key in os.environ
+            },
+            **build_native_claude_terminal_env(claude_config),
+            "OMNIGENT_NATIVE_HOOK_IPC": "1",
+            "OMNIGENT_CLAUDE_TRUSTED_TMP_PARENT": str(_claude_trusted_parent),
+            "OMNIGENT_CLAUDE_MCP_SOCKET_DIR": str(_claude_mcp_socket_dir),
+            "TMPDIR": str(bridge_dir / HOOK_OUTPUT_DIR / "tmp"),
+        },
         # Names to strip (see ``_claude_terminal_env_unset``). Dropping
         # ``DATABRICKS_CONFIG_PROFILE`` matters because Claude's MCP servers
         # inherit this env and several build ``WorkspaceClient`` without pinning
@@ -8927,6 +8978,7 @@ async def _auto_create_claude_terminal(
         # ``ANTHROPIC_BASE_URL`` / ``apiKeyHelper``), so this affects only MCPs;
         # ones needing a specific profile must set it in their own per-MCP env.
         env_unset=claude_terminal_env_unset,
+        inherit_env=False,
         scrollback=50000,
         # Keep the private tmux server alive if the `claude` CLI exits (e.g. a
         # sub-agent worker whose CLI exits right after rendering its prompt on
@@ -8972,6 +9024,10 @@ async def _auto_create_claude_terminal(
 
         with contextlib.suppress(Exception):
             await asyncio.to_thread(ClaudeDebugLogFollower(bridge_dir).close, session_id)
+        await asyncio.to_thread(_claude_hook_ipc.close)
+        with contextlib.suppress(OSError):
+            _claude_mcp_socket_dir.rmdir()
+            _claude_hook_ipc.socket_dir.rmdir()
         raise
     if reset_pick_after_launch:
         await _clear_session_model_override(session_id, server_client)
@@ -9073,6 +9129,10 @@ async def _auto_create_claude_terminal(
         finally:
             await _shutdown_session_router_async(session_id, _subagent_router)
             await _shutdown_session_turn_router_async(session_id, _claude_turn_router)
+            await asyncio.to_thread(_claude_hook_ipc.close)
+            with contextlib.suppress(OSError):
+                _claude_mcp_socket_dir.rmdir()
+                _claude_hook_ipc.socket_dir.rmdir()
 
     _forwarder_task = asyncio.create_task(
         _supervise_bridge(),

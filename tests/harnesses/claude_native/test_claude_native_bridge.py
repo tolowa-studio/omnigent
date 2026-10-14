@@ -12504,7 +12504,7 @@ def test_approval_wait_marker_tracks_a_parked_permission_hook(
     assert not claude_native_bridge.approval_wait_is_fresh("conv_other", bridge_dir=bridge_dir)
 
 
-def test_hook_output_survives_session_rotation_without_rewriting_bridge_config(
+def test_hook_output_survives_runner_owned_session_rotation(
     tmp_path: Path,
 ) -> None:
     """A live pane's private grant remains valid after /clear or /fork."""
@@ -12518,12 +12518,11 @@ def test_hook_output_survives_session_rotation_without_rewriting_bridge_config(
 
     bridge_dir = prepare_bridge_dir("conv_original", workspace=tmp_path)
     config_path = bridge_dir / "bridge.json"
-    original_config = config_path.read_bytes()
     claude_native_bridge.write_active_session_id(bridge_dir, "conv_replacement")
 
-    assert config_path.read_bytes() == original_config
+    assert json.loads(config_path.read_text())["active_session_id"] == "conv_replacement"
     assert claude_native_bridge.read_active_session_id(bridge_dir) == "conv_replacement"
-    assert (bridge_dir / "hook-output" / "active_session.json").is_file()
+    assert not (bridge_dir / "hook-output" / "active_session.json").exists()
     assert write_turn_routing_marker(bridge_dir, session_id="conv_replacement")
     assert turn_routing_marker_present(bridge_dir, "conv_replacement")
     assert not turn_routing_marker_present(bridge_dir, "conv_original")
