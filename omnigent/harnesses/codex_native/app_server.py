@@ -4561,13 +4561,23 @@ def codex_terminal_env(app_server: CodexNativeAppServer) -> dict[str, str]:
     :param app_server: Running app-server wrapper.
     :returns: Environment variables for the terminal process.
     """
-    return {
-        key: value
-        for key, value in {**app_server.env, "CODEX_HOME": str(app_server.codex_home)}.items()
-        if key
-        in {"CODEX_HOME", "DATABRICKS_HOST", "DATABRICKS_CODEX_TOKEN", "OTEL_RESOURCE_ATTRIBUTES"}
-        or key.startswith(("OPENAI_", "HTTP_", "HTTPS_", "NO_PROXY", "ALL_PROXY"))
+    # The app-server owns inference credentials. The remote TUI is also the
+    # ancestor of model-driven shell commands, so never pass provider/API or
+    # proxy credentials into its environment. TerminalEnvSpec must launch
+    # this mapping with inherit_env=False so ambient runner secrets cannot
+    # reappear after this filter.
+    env = {
+        "CODEX_HOME": str(app_server.codex_home),
+        "HOME": str(Path.home()),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "TERM": os.environ.get("TERM", "xterm-256color"),
     }
+    for key in ("DATABRICKS_HOST", "NO_PROXY", "OTEL_RESOURCE_ATTRIBUTES"):
+        value = app_server.env.get(key)
+        if value:
+            env[key] = value
+    return env
 
 
 # Codex's full-bypass flag. Disables BOTH the approval prompts and the
