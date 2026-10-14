@@ -3736,6 +3736,32 @@ def test_populate_codex_home_config_hard_links_remote_mcp_oauth(tmp_path: Path) 
     assert (target / "mcp-oauth-locks" / "file-store.lock").is_file()
 
 
+def test_native_codex_home_replaces_shared_lock_symlink_without_touching_target(
+    tmp_path: Path,
+) -> None:
+    """A reused native bridge gets a private lock dir without following its old link."""
+    from omnigent.inner.codex_executor import _populate_codex_home_config
+
+    source = tmp_path / "real_codex_home"
+    host_locks = source / "mcp-oauth-locks"
+    host_locks.mkdir(parents=True)
+    sentinel = host_locks / "host.lock"
+    sentinel.write_text("preserve host state")
+    target = tmp_path / "private_bridge" / "codex-home"
+    target.mkdir(parents=True)
+    private_locks = target / "mcp-oauth-locks"
+    private_locks.symlink_to(host_locks, target_is_directory=True)
+
+    _populate_codex_home_config(target, source, private_mcp_oauth_locks=True)
+
+    assert private_locks.is_dir() and not private_locks.is_symlink()
+    assert list(private_locks.iterdir()) == []
+    assert sentinel.read_text() == "preserve host state"
+    _populate_codex_home_config(target, source, private_mcp_oauth_locks=True)
+    assert private_locks.is_dir() and not private_locks.is_symlink()
+    assert sentinel.read_text() == "preserve host state"
+
+
 def test_populate_codex_home_config_copies_remote_mcp_oauth_across_filesystems(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
