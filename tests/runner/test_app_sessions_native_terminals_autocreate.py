@@ -1431,9 +1431,9 @@ async def test_auto_create_claude_terminal_passes_raw_instructions(
     assert args[idx + 1] == "Be a concise, careful coding assistant."
 
 
-@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "none", None])
+@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "linux_bwrap", "none", None])
 @pytest.mark.asyncio
-async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_settings_file(
+async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     sandbox_type: str | None,
@@ -1441,9 +1441,8 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_set
     """
     Host-spawned Claude terminal honours the agent's ``os_env.sandbox``.
 
-    Confirms inherited sandbox policy stays intact, and that Seatbelt receives
-    only the generated Claude settings file as an additional read path. ``none``
-    and an unset sandbox retain their prior behavior.
+    Confirms an active sandbox gets only this session's bridge and marker
+    directory. ``none`` and an unset sandbox retain their prior behavior.
 
     :param tmp_path: Pytest-provided temporary directory.
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -1534,21 +1533,30 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_set
     else:
         assert launched_sandbox is not None
         assert launched_sandbox.type == sandbox_type
-        assert launched_sandbox.write_paths == ["/existing/write"]
-        if sandbox_type == "darwin_seatbelt":
-            settings_path = str(
-                claude_native_bridge.bridge_dir_for_bridge_id("e27fc87ef2a8d798895ce8c1e66db82d")
-                / "claude-settings.json"
+        assert launched_sandbox.read_paths == ["/existing/read"]
+        if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
+            bridge_dir = claude_native_bridge.bridge_dir_for_bridge_id(
+                "e27fc87ef2a8d798895ce8c1e66db82d"
             )
-            assert launched_sandbox.read_paths == ["/existing/read", settings_path]
+            marker_root = claude_native_bridge.approval_wait_marker_root(
+                "e27fc87ef2a8d798895ce8c1e66db82d", bridge_dir=bridge_dir
+            )
+            assert launched_sandbox.write_paths == [
+                "/existing/write",
+                str(bridge_dir),
+                str(marker_root),
+            ]
+            settings_path = str(bridge_dir / "claude-settings.json")
             assert settings_path in captured["spec"].args
-            assert settings_path not in launched_sandbox.write_paths
-            assert str(Path(settings_path).parent) not in launched_sandbox.read_paths
+            assert str(claude_native_bridge.bridge_dir_for_bridge_id("peer")) not in (
+                launched_sandbox.write_paths or []
+            )
         else:
-            assert launched_sandbox.read_paths == ["/existing/read"]
+            assert launched_sandbox.write_paths == ["/existing/write"]
         # The launch gets a copied sandbox; the agent's original policy is intact.
         assert agent_sandbox is not None
         assert agent_sandbox.read_paths == ["/existing/read"]
+        assert agent_sandbox.write_paths == ["/existing/write"]
     # The whole os_env is threaded through as the inheritance parent.
     assert captured["parent_os_env"] is agent_os_env
 

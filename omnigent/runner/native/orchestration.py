@@ -8258,6 +8258,9 @@ async def _auto_create_claude_terminal(
     # lets the cold-resume fallback below use it when the server GET missed the
     # external_session_id binding (e.g. workspace-scope ContextVar not set).
     from omnigent.harnesses.claude_native.bridge import (
+        approval_wait_marker_root,
+    )
+    from omnigent.harnesses.claude_native.bridge import (
         bridge_dir_for_bridge_id as _bridge_dir_for_bridge_id,
     )
     from omnigent.harnesses.claude_native.bridge import (
@@ -8882,12 +8885,20 @@ async def _auto_create_claude_terminal(
     claude_terminal_env_unset = _claude_terminal_env_unset(claude_config)
 
     terminal_sandbox = agent_os_env.sandbox if agent_os_env is not None else None
-    if terminal_sandbox is not None and terminal_sandbox.type == "darwin_seatbelt":
-        # Claude reads --settings before the bridge hooks can run.
-        settings_path = str(bridge_dir / "claude-settings.json")
+    if terminal_sandbox is not None and terminal_sandbox.type in {
+        "darwin_seatbelt",
+        "linux_bwrap",
+    }:
+        # Claude's command hooks inherit the terminal sandbox. Grant only this
+        # session's bridge and approval markers: hooks must read bridge.json
+        # and write observer state, but cannot see sibling session bridges.
         terminal_sandbox = dataclasses.replace(
             terminal_sandbox,
-            read_paths=[*(terminal_sandbox.read_paths or []), settings_path],
+            write_paths=[
+                *(terminal_sandbox.write_paths or []),
+                str(bridge_dir),
+                str(approval_wait_marker_root(session_id, bridge_dir=bridge_dir)),
+            ],
         )
 
     # Inherit the agent's os_env so its sandbox (e.g. ``type: none``),

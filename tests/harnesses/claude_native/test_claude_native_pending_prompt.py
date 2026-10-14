@@ -47,7 +47,7 @@ def native_bridge(tmp_path: Path) -> Path:
 
 def _park_hook(native: Path) -> Path:
     marker = bridge.approval_wait_marker_path("session-question", bridge_dir=native)
-    marker.parent.mkdir(exist_ok=True)
+    marker.parent.mkdir(parents=True, exist_ok=True)
     bridge.touch_approval_wait_marker(marker)
     return marker
 

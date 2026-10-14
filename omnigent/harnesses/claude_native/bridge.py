@@ -1494,15 +1494,17 @@ def approval_wait_marker_path(session_id: str, *, bridge_dir: Path | None = None
         computed root could — and a marker written where the reaper never looks
         would fail silently. ``None`` uses this process's own root, which is
         the runner side including the pane reaper.
-    :returns: Absolute marker path under ``<temp root>/approval-waits``, e.g.
-        ``.../approval-waits/<digest>.<pid>.wait``.
+    :returns: Absolute marker path under the session's approval directory, e.g.
+        ``.../approval-waits/<digest>/<digest>.<pid>.wait``.
     """
-    root = (
-        bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME
-        if bridge_dir is not None
-        else _APPROVAL_WAIT_ROOT
-    )
+    root = approval_wait_marker_root(session_id, bridge_dir=bridge_dir)
     return root / f"{_approval_wait_digest(session_id)}.{os.getpid()}.wait"
+
+
+def approval_wait_marker_root(session_id: str, *, bridge_dir: Path | None = None) -> Path:
+    """Return the private marker directory for one Omnigent session."""
+    parent = bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME if bridge_dir else _APPROVAL_WAIT_ROOT
+    return parent / _approval_wait_digest(session_id)
 
 
 def touch_approval_wait_marker(marker: Path) -> None:
@@ -1555,7 +1557,7 @@ def approval_wait_is_fresh(session_id: str, *, bridge_dir: Path | None = None) -
         :data:`APPROVAL_WAIT_MARKER_TTL_S`; ``False`` when none exists, all
         are stale, or the root is unreadable.
     """
-    root = bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME if bridge_dir else _APPROVAL_WAIT_ROOT
+    root = approval_wait_marker_root(session_id, bridge_dir=bridge_dir)
     try:
         markers = list(root.glob(f"{_approval_wait_digest(session_id)}.*.wait"))
     except OSError:
@@ -1710,7 +1712,7 @@ def prepare_bridge_dir(
         # owns creating and validating it before any hook can fire. Derived from the
         # bridge dir just validated rather than read from the module global, so it
         # lands in the same tree the caller asked for.
-        _ensure_secure_dir(bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME)
+        _ensure_secure_dir(approval_wait_marker_root(conversation_id, bridge_dir=bridge_dir))
         config = _read_json_file(bridge_dir / _CONFIG_FILE)
         token = config.get("token") if isinstance(config, dict) else None
         if not isinstance(token, str) or not token:
