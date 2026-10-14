@@ -1106,6 +1106,7 @@ def _populate_codex_home_config(
     extend_model_catalog: bool = False,
     supported_efforts: frozenset[str] = CODEX_EFFORTS,
     include_credentials: bool = True,
+    private_mcp_oauth_locks: bool = False,
     required_brokered_probe: tuple[str, Path, OSEnvSpec] | None = None,
 ) -> None:
     """
@@ -1155,6 +1156,8 @@ def _populate_codex_home_config(
     :param include_credentials: Bridge host credential stores. Signer-backed
         workers set this to ``False`` because authentication stays exclusively
         in the trusted signer process.
+    :param private_mcp_oauth_locks: Keep the native terminal's OAuth lock state
+        inside its private home instead of linking the host lock directory.
     :param required_brokered_probe: Codex path, working directory, and active
         sandbox used to write a network-denied bundled catalog.
     """
@@ -1174,6 +1177,15 @@ def _populate_codex_home_config(
             )
         finally:
             probe.close()
+    if private_mcp_oauth_locks:
+        lock_dir = target_dir / "mcp-oauth-locks"
+        if lock_dir.is_symlink():
+            # Only unlink the bridge entry. Never descend into or remove its
+            # target, which may be the user's shared CODEX_HOME lock state.
+            lock_dir.unlink()
+        elif lock_dir.exists() and not lock_dir.is_dir():
+            raise RuntimeError("Codex private OAuth lock path is not a directory")
+        lock_dir.mkdir(mode=0o700, exist_ok=True)
     if not source_dir.is_dir():
         return
 
@@ -1220,6 +1232,8 @@ def _populate_codex_home_config(
 
     if not minimal_config:
         for reldir in _CODEX_HOME_SYMLINK_DIRS:
+            if private_mcp_oauth_locks and reldir == Path("mcp-oauth-locks"):
+                continue
             source_subdir = source_dir / reldir
             if not source_subdir.is_dir():
                 continue

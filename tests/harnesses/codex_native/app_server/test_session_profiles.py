@@ -92,6 +92,7 @@ async def _start_codex_home(
     monkeypatch: pytest.MonkeyPatch,
     *,
     env: dict[str, str],
+    preexisting_lock_symlink: bool = False,
 ) -> tuple[Path, list[str]]:
     """Boot an app-server with *env* and return its home plus probe calls."""
     real_codex_home = tmp_path / "real-codex-home"
@@ -109,6 +110,12 @@ async def _start_codex_home(
         encoding="utf-8",
     )
     codex_home = tmp_path / "codex-home"
+    if preexisting_lock_symlink:
+        host_locks = real_codex_home / "mcp-oauth-locks"
+        host_locks.mkdir()
+        (host_locks / "host.lock").write_text("preserve host state")
+        codex_home.mkdir()
+        (codex_home / "mcp-oauth-locks").symlink_to(host_locks, target_is_directory=True)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(real_codex_home))
@@ -119,6 +126,20 @@ async def _start_codex_home(
     await server.start()
     await server.close()
     return codex_home, probes
+
+
+async def test_native_app_server_replaces_shared_oauth_lock_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_home, _ = await _start_codex_home(
+        tmp_path, monkeypatch, env={}, preexisting_lock_symlink=True
+    )
+    lock_dir = codex_home / "mcp-oauth-locks"
+    assert lock_dir.is_dir() and not lock_dir.is_symlink()
+    assert list(lock_dir.iterdir()) == []
+    assert (tmp_path / "real-codex-home" / "mcp-oauth-locks" / "host.lock").read_text() == (
+        "preserve host state"
+    )
 
 
 #: The regex the routing gate is registered under (codex flattens the tool name).
