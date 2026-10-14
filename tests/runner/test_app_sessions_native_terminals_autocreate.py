@@ -1431,27 +1431,19 @@ async def test_auto_create_claude_terminal_passes_raw_instructions(
     assert args[idx + 1] == "Be a concise, careful coding assistant."
 
 
+@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "none", None])
 @pytest.mark.asyncio
-async def test_auto_create_claude_terminal_inherits_agent_sandbox(
+async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_settings_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    sandbox_type: str | None,
 ) -> None:
     """
     Host-spawned Claude terminal honours the agent's ``os_env.sandbox``.
 
-    Regression for the sandbox-override bug: the auto-create path built a
-    fresh ``TerminalEnvSpec`` whose ``os_env`` carried no ``sandbox`` and
-    passed no ``parent_os_env``, so ``launch_terminal`` fell back to
-    ``_default_sandbox_for_platform`` (``linux_bwrap`` / ``darwin_seatbelt``)
-    and ignored the agent YAML. A claude-native agent that declares
-    ``os_env.sandbox.type: none`` (e.g. Polly's ``claude_code`` worker,
-    which relies on the outer container/VM as the boundary) was wrongly
-    forced into bwrap, which then failed to start in a hardened container.
-
-    Asserts the launched terminal spec's ``os_env.sandbox`` is the agent's
-    ``none`` sandbox (not the platform default) and that the agent's
-    ``os_env`` is threaded through as the launch ``parent_os_env`` so the
-    rest of the policy (egress_rules / env_passthrough) is inherited too.
+    Confirms inherited sandbox policy stays intact, and that Seatbelt receives
+    only the generated Claude settings file as an additional read path. ``none``
+    and an unset sandbox retain their prior behavior.
 
     :param tmp_path: Pytest-provided temporary directory.
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -1503,12 +1495,20 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox(
         ),
     )
 
-    # An agent that declares sandbox: none (runs unconfined; the outer
-    # container/VM is the boundary) — exactly Polly's coding sub-agents.
+    # Keep existing grants visible so the test also proves they are preserved.
+    agent_sandbox = (
+        OSEnvSandboxSpec(
+            type=sandbox_type,
+            read_paths=["/existing/read"],
+            write_paths=["/existing/write"],
+        )
+        if sandbox_type is not None
+        else None
+    )
     agent_os_env = OSEnvSpec(
         type="caller_process",
         cwd=".",
-        sandbox=OSEnvSandboxSpec(type="none"),
+        sandbox=agent_sandbox,
     )
     agent_spec = AgentSpec(
         spec_version=1,
@@ -1529,11 +1529,26 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox(
     )
 
     launched_sandbox = captured["spec"].os_env.sandbox
-    assert launched_sandbox is not None, (
-        "auto-create dropped the agent's sandbox; launch_terminal will fall "
-        "back to _default_sandbox_for_platform (bwrap), overriding sandbox: none"
-    )
-    assert launched_sandbox.type == "none"
+    if sandbox_type is None:
+        assert launched_sandbox is None
+    else:
+        assert launched_sandbox is not None
+        assert launched_sandbox.type == sandbox_type
+        assert launched_sandbox.write_paths == ["/existing/write"]
+        if sandbox_type == "darwin_seatbelt":
+            settings_path = str(
+                claude_native_bridge.bridge_dir_for_bridge_id("e27fc87ef2a8d798895ce8c1e66db82d")
+                / "claude-settings.json"
+            )
+            assert launched_sandbox.read_paths == ["/existing/read", settings_path]
+            assert settings_path in captured["spec"].args
+            assert settings_path not in launched_sandbox.write_paths
+            assert str(Path(settings_path).parent) not in launched_sandbox.read_paths
+        else:
+            assert launched_sandbox.read_paths == ["/existing/read"]
+        # The launch gets a copied sandbox; the agent's original policy is intact.
+        assert agent_sandbox is not None
+        assert agent_sandbox.read_paths == ["/existing/read"]
     # The whole os_env is threaded through as the inheritance parent.
     assert captured["parent_os_env"] is agent_os_env
 
