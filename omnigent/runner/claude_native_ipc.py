@@ -22,7 +22,9 @@ from omnigent.harnesses.claude_native.bridge import (
     BRIDGE_ID_LABEL_KEY,
     _call_relay_tool,
     _mcp_tool_schema_from_spec,
+    _read_json_file,
     _read_relay_tool_specs,
+    _write_json_file,
     approval_wait_marker_path,
     hold_approval_wait_marker,
     read_active_session_id,
@@ -43,9 +45,16 @@ def start_claude_native_ipc(
     server_client: httpx.AsyncClient,
     server_url: str,
     turn_router: Any = None,
+    turn_routers: dict[str, Any] | None = None,
 ) -> NativeHookIPC:
     """Start a credential-free child interface backed by the trusted runner."""
     loop = asyncio.get_running_loop()
+    routers = turn_routers if turn_routers is not None else {}
+    if turn_router is not None:
+        routers[session_id] = turn_router
+    routing_enabled = turn_router is not None
+    rotation_lock = asyncio.Lock()
+    recent_rotations: list[float] = []
 
     def await_on_runner(coro: Any, timeout: float = 75.0) -> Any:
         return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=timeout)
@@ -138,6 +147,17 @@ def start_claude_native_ipc(
         return {"evaluation_response": result}
 
     async def rotate(body: dict[str, Any]) -> dict[str, Any]:
+        # The scoped IPC capability is visible to this session's shell. It
+        # cannot authorize an unbounded AP create/transfer loop.
+        async with rotation_lock:
+            now = time.monotonic()
+            recent_rotations[:] = [stamp for stamp in recent_rotations if now - stamp < 3600]
+            if len(recent_rotations) >= 12:
+                raise RuntimeError("Claude session rotation rate limit reached")
+            recent_rotations.append(now)
+            return await _rotate(body)
+
+    async def _rotate(body: dict[str, Any]) -> dict[str, Any]:
         kind = body.get("kind")
         if kind not in {"clear", "fork"}:
             raise ValueError("invalid rotation kind")
@@ -188,7 +208,28 @@ def start_claude_native_ipc(
             json={"target_session_id": new_id},
         )
         transfer.raise_for_status()
+        _write_json_file(
+            bridge_dir / "rotation.json",
+            {"kind": kind, "old_session_id": old_id, "new_session_id": new_id},
+        )
         write_active_session_id(bridge_dir, new_id)
+        if routing_enabled:
+            from omnigent.runner.turn_routing import (
+                ensure_session_turn_router,
+                shutdown_session_turn_router,
+            )
+
+            replacement = ensure_session_turn_router(
+                new_id,
+                bridge_dir=bridge_dir,
+                server_client=server_client,
+                harness="claude-native",
+            )
+            if replacement is not None:
+                routers[new_id] = replacement
+            old_router = routers.pop(old_id, None)
+            if old_router is not None:
+                await asyncio.to_thread(shutdown_session_turn_router, old_id, old_router)
         old_labels = {BRIDGE_ID_LABEL_KEY: f"{old_id}-cleared"} if kind == "clear" else {}
         unbind = await server_client.patch(
             f"/v1/sessions/{quote(old_id, safe='')}",
@@ -200,7 +241,8 @@ def start_claude_native_ipc(
 
     def route(body: dict[str, Any]) -> dict[str, Any]:
         active = await_on_runner(verify_active())
-        if turn_router is None or active != session_id:
+        current_router = routers.get(active)
+        if current_router is None:
             return {"action": "allow", "block": False}
         prompt = body.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
@@ -213,8 +255,8 @@ def start_claude_native_ipc(
         )
 
         decision = _route_turn_post(
-            turn_router.url + ROUTE_PATH_TEMPLATE.format(session_id=quote(active, safe="")),
-            turn_router.token,
+            current_router.url + ROUTE_PATH_TEMPLATE.format(session_id=quote(active, safe="")),
+            current_router.token,
             {
                 "harness": "claude-native",
                 "prompt": prompt,
@@ -225,7 +267,8 @@ def start_claude_native_ipc(
         )
         if not isinstance(decision, dict):
             return {"action": "allow", "block": False}
-        if decision.get("action") == "route":
+        model = decision.get("model")
+        if decision.get("action") == "route" and isinstance(model, str) and model:
             decision_id = decision.get("decision_id")
             recorded = write_turn_routing_marker(
                 bridge_dir,
@@ -304,9 +347,21 @@ def start_claude_native_ipc(
     handlers: dict[str, Callable[[str, dict[str, Any]], dict[str, Any]]] = {
         path: (lambda bound, body, path=path: handle(path, bound, body)) for path in paths
     }
-    return start_native_hook_ipc(
+    ipc = start_native_hook_ipc(
         bridge_dir=bridge_dir,
         bridge_id=bridge_id,
         session_id=session_id,
         handlers=handlers,
     )
+    marker_root = bridge_dir / "approval-waits"
+    try:
+        config = _read_json_file(bridge_dir / "bridge.json")
+        local_config = {key: config[key] for key in ("workspace", "sandbox") if key in config}
+        _write_json_file(bridge_dir / "hook-ipc" / "local-tools.json", local_config)
+        if marker_root.is_symlink():
+            raise ValueError("Claude approval marker root must not be a symlink")
+        marker_root.mkdir(mode=0o700, exist_ok=True)
+    except BaseException:
+        ipc.close()
+        raise
+    return ipc

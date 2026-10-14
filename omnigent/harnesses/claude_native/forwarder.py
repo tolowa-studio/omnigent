@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -29,6 +30,7 @@ from omnigent.harnesses.claude_native.bridge import (
     ClaudeTranscriptItem,
     HookReadResult,
     TranscriptReadResult,
+    _read_json_file,
     compute_transcript_cumulative_cost,
     hook_output_read_path,
     read_active_session_id,
@@ -222,19 +224,15 @@ class _TranscriptDiscoveryDiagnostics:
 def _diagnostic_file_size(path: Path) -> int | None:
     """Return a diagnostic file's size, or ``None`` when it is unavailable."""
     try:
-        return path.stat().st_size
+        info = path.lstat()
+        return info.st_size if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 else None
     except OSError:
         return None
 
 
 def _last_observer_hook_name(bridge_dir: Path) -> str | None:
     """Return the last recorded observer hook name for diagnostics."""
-    try:
-        state = json.loads(
-            hook_output_read_path(bridge_dir, "state.json").read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError):
-        return None
+    state = _read_json_file(hook_output_read_path(bridge_dir, "state.json"))
     value = state.get("last_hook_event_name") if isinstance(state, dict) else None
     return value if isinstance(value, str) and value else None
 
@@ -316,15 +314,19 @@ def _log_new_observer_hook_stderr(
     """Relay newly captured observer-hook stderr into session-scoped runner logs."""
     path = hook_output_read_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)
     try:
-        size = path.stat().st_size
-        if size < byte_offset:
-            byte_offset = 0
-        if size == byte_offset:
-            return byte_offset
-        with path.open("rb") as handle:
-            handle.seek(byte_offset)
-            raw = handle.read(_OBSERVER_HOOK_STDERR_READ_BYTES)
-            new_offset = handle.tell()
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return byte_offset
+            if info.st_size < byte_offset:
+                byte_offset = 0
+            if info.st_size == byte_offset:
+                return byte_offset
+            raw = os.pread(fd, _OBSERVER_HOOK_STDERR_READ_BYTES, byte_offset)
+            new_offset = byte_offset + len(raw)
+        finally:
+            os.close(fd)
     except OSError:
         return byte_offset
 
@@ -1310,6 +1312,7 @@ async def forward_claude_transcript_to_session(
                         session_id=current_session_id,
                         bridge_dir=bridge_dir,
                         state=hook_state,
+                        previous_session_id=session_id,
                     )
                     if rotation is not None:
                         await _cancel_subagent_forward_task(subagent_task)
@@ -1367,6 +1370,7 @@ async def forward_claude_transcript_to_session(
                         session_id=current_session_id,
                         bridge_dir=bridge_dir,
                         state=hook_state,
+                        previous_session_id=session_id,
                     )
                     if rotation is not None:
                         await _cancel_subagent_forward_task(subagent_task)
@@ -3157,12 +3161,34 @@ async def supervise_forwarder(
         backoff_s = min(backoff_s * 2.0, _SUPERVISOR_MAX_BACKOFF_S)
 
 
+def _managed_rotation_target(
+    bridge_dir: Path,
+    *,
+    kind: str,
+    previous_session_id: str | None,
+    journal_target: str | None,
+) -> str | None:
+    """Accept a journal rotation only when a trusted IPC receipt matches it."""
+    if not previous_session_id or not journal_target:
+        return None
+    receipt = _read_json_file(bridge_dir / "rotation.json")
+    if (
+        receipt.get("kind") != kind
+        or receipt.get("old_session_id") != previous_session_id
+        or receipt.get("new_session_id") != journal_target
+        or read_active_session_id(bridge_dir) != journal_target
+    ):
+        return None
+    return journal_target
+
+
 async def _maybe_rotate_session_on_clear(
     *,
     client: httpx.AsyncClient,
     session_id: str,
     bridge_dir: Path,
     state: HookForwardState,
+    previous_session_id: str | None = None,
 ) -> str | None:
     """
     Rotate the active Omnigent session when Claude reports ``/clear``.
@@ -3205,7 +3231,18 @@ async def _maybe_rotate_session_on_clear(
     )
     new_session_id: str | None = None
     try:
-        if clear_record.clear_rotated_to:
+        if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+            # Hook records are sandbox-writable. Managed rotations already
+            # completed through runner IPC, so the trusted bridge identity is
+            # the only admissible rotated-to value. Never create a session
+            # from a forged journal entry.
+            new_session_id = _managed_rotation_target(
+                bridge_dir,
+                kind="clear",
+                previous_session_id=previous_session_id,
+                journal_target=clear_record.clear_rotated_to,
+            )
+        elif clear_record.clear_rotated_to:
             new_session_id = clear_record.clear_rotated_to
         else:
             new_session_id = await _create_clear_replacement_session(
@@ -3223,7 +3260,8 @@ async def _maybe_rotate_session_on_clear(
             extra={"session_id": session_id},
         )
     await _write_hook_state_async(bridge_dir, durable)
-    reset_transcript_forward_state(bridge_dir, reset_hooks=False)
+    if new_session_id is not None:
+        reset_transcript_forward_state(bridge_dir, reset_hooks=False)
     return new_session_id
 
 
@@ -3359,6 +3397,7 @@ async def _maybe_rotate_session_on_fork(
     session_id: str,
     bridge_dir: Path,
     state: HookForwardState,
+    previous_session_id: str | None = None,
 ) -> str | None:
     """
     Fork the active Omnigent session when Claude reports ``/fork``/``/branch``.
@@ -3397,7 +3436,14 @@ async def _maybe_rotate_session_on_fork(
     )
     new_session_id: str | None = None
     try:
-        if fork_record.fork_rotated_to:
+        if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+            new_session_id = _managed_rotation_target(
+                bridge_dir,
+                kind="fork",
+                previous_session_id=previous_session_id,
+                journal_target=fork_record.fork_rotated_to,
+            )
+        elif fork_record.fork_rotated_to:
             new_session_id = fork_record.fork_rotated_to
         else:
             new_session_id = await _create_fork_replacement_session(
@@ -3415,10 +3461,11 @@ async def _maybe_rotate_session_on_fork(
             extra={"session_id": session_id},
         )
     await _write_hook_state_async(bridge_dir, durable)
-    await _seed_fork_transcript_forward_state(
-        bridge_dir=bridge_dir,
-        transcript_path=fork_record.transcript_path,
-    )
+    if new_session_id is not None:
+        await _seed_fork_transcript_forward_state(
+            bridge_dir=bridge_dir,
+            transcript_path=fork_record.transcript_path,
+        )
     return new_session_id
 
 

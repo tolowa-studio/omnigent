@@ -1504,15 +1504,19 @@ def approval_wait_marker_path(session_id: str, *, bridge_dir: Path | None = None
 
 
 def approval_wait_marker_root(session_id: str, *, bridge_dir: Path | None = None) -> Path:
-    """Return the marker root under this bridge's mutable hook output."""
+    """Return the marker root used by this bridge's permission hook."""
     if bridge_dir is None:
         return _APPROVAL_WAIT_ROOT / _approval_wait_digest(session_id)
+    if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        # The managed permission callback lives in the trusted runner. A
+        # sandbox-writable marker would let the model shell pin its own pane.
+        return bridge_dir / _APPROVAL_WAIT_DIR_NAME
     output_dir = bridge_dir / HOOK_OUTPUT_DIR
     if output_dir.is_dir():
         return output_dir / _APPROVAL_WAIT_DIR_NAME
     # A live pre-upgrade bridge has no output directory. Keep using its
     # original marker root until a fresh preparation starts a new journal.
-    return bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME / _approval_wait_digest(session_id)
+    return bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME
 
 
 def hook_output_path(bridge_dir: Path, filename: str) -> Path:
@@ -1543,7 +1547,17 @@ def touch_approval_wait_marker(marker: Path) -> None:
     :returns: None.
     """
     try:
-        marker.touch()
+        fd = os.open(
+            marker,
+            os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                os.ftruncate(fd, 0)
+        finally:
+            os.close(fd)
     except OSError:
         _logger.debug("Could not touch approval-wait marker", exc_info=True)
 
@@ -6403,6 +6417,8 @@ def _serve_mcp(bridge_dir: Path) -> None:
     if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
         # The terminal shares a sandbox with this stdio child. Do not load
         # bridge.json (which contains backend credentials) into either one.
+        local_config = _read_json_file(bridge_dir / "hook-ipc" / "local-tools.json")
+        tools, close_tools = _build_tools(local_config)
         notification_queue: queue.Queue[_JsonObject | None] = queue.Queue()
         stdout_lock = threading.Lock()
         httpd = _start_http_ingress(bridge_dir, secrets.token_urlsafe(32), notification_queue)
@@ -6414,11 +6430,12 @@ def _serve_mcp(bridge_dir: Path) -> None:
         )
         writer.start()
         try:
-            _stdio_jsonrpc_loop({}, stdout_lock, bridge_dir)
+            _stdio_jsonrpc_loop(tools, stdout_lock, bridge_dir)
         finally:
             notification_queue.put(None)
             httpd.shutdown()
             httpd.server_close()
+            close_tools()
         return
     config = _read_json_file(bridge_dir / _CONFIG_FILE)
     if not isinstance(config, dict):
@@ -7351,7 +7368,11 @@ def _combined_mcp_tool_schemas(
         raw_tools = (result or {}).get("tools")
         if not isinstance(raw_tools, list):
             return []
-        return [row for row in raw_tools if isinstance(row, dict)]
+        schemas = {name: _mcp_tool_schema(tool) for name, tool in local_tools.items()}
+        for row in raw_tools:
+            if isinstance(row, dict) and isinstance(row.get("name"), str):
+                schemas[row["name"]] = row
+        return list(schemas.values())
     schemas = {name: _mcp_tool_schema(tool) for name, tool in local_tools.items()}
     for tool_spec in _read_relay_tool_specs(bridge_dir):
         name = tool_spec.get("name")
@@ -7405,19 +7426,30 @@ def _call_mcp_tool(
     if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1":
         from omnigent.runner.native_hook_ipc import post_native_hook_ipc
 
-        response = post_native_hook_ipc(
-            bridge_dir,
-            "/tool-call",
-            {"name": name, "arguments": arguments},
-            timeout=_TOOL_RELAY_POST_TIMEOUT_S,
-        )
-        result = (response or {}).get("result")
-        return result if isinstance(result, dict) else _mcp_error("runner tool relay unavailable")
+        listing = post_native_hook_ipc(bridge_dir, "/tool-list", {})
+        raw_tools = (listing or {}).get("tools")
+        if not isinstance(raw_tools, list):
+            return _mcp_error("runner tool relay unavailable")
+        if name in {row.get("name") for row in raw_tools if isinstance(row, dict)}:
+            response = post_native_hook_ipc(
+                bridge_dir,
+                "/tool-call",
+                {"name": name, "arguments": arguments},
+                timeout=_TOOL_RELAY_POST_TIMEOUT_S,
+            )
+            result = (response or {}).get("result")
+            return (
+                result if isinstance(result, dict) else _mcp_error("runner tool relay unavailable")
+            )
     if name in _read_relay_tool_names(bridge_dir):
         return _call_relay_tool(bridge_dir, name, arguments)
     if name not in tools:
         return _mcp_error(f"unknown tool: {name!r}")
-    bridge_config = _read_json_file(bridge_dir / _CONFIG_FILE)
+    bridge_config = _read_json_file(
+        bridge_dir / "hook-ipc" / "local-tools.json"
+        if os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1"
+        else bridge_dir / _CONFIG_FILE
+    )
     workspace_raw = bridge_config.get("workspace") if isinstance(bridge_config, dict) else None
     workspace = Path(workspace_raw) if isinstance(workspace_raw, str) and workspace_raw else None
     ctx = ToolContext(
@@ -7698,14 +7730,7 @@ def read_claude_context_state(bridge_dir: Path) -> _JsonObject | None:
         window — the forwarder treats that as "no update".
     """
     path = hook_output_read_path(bridge_dir, _CONTEXT_FILE)
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    parsed = _read_json_file(path)
     if not isinstance(parsed, dict):
         return None
     size = parsed.get("context_window_size")
@@ -7837,10 +7862,7 @@ def read_claude_status_model(bridge_dir: Path) -> str | None:
         the file is missing / unreadable / carries no model string.
     """
     path = hook_output_read_path(bridge_dir, _CONTEXT_FILE)
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    parsed = _read_json_file(path)
     if not isinstance(parsed, dict):
         return None
     model = parsed.get("model")
@@ -9425,10 +9447,36 @@ def _wait_for_server_info(
     """
     deadline = time.monotonic() + timeout_s
     path = hook_output_read_path(bridge_dir, _SERVER_FILE)
+    ipc_advert = bridge_dir / "hook-ipc" / "runner-ipc.json"
+    managed_socket_root: Path | None = None
+    if ipc_advert.is_file():
+        ipc_info = _read_json_file(ipc_advert)
+        ipc_socket = ipc_info.get("socket_path")
+        if not isinstance(ipc_socket, str) or Path(ipc_socket).name != "runner-ipc.sock":
+            raise RuntimeError("Claude native IPC advertisement is invalid")
+        managed_socket_root = Path(ipc_socket).parent / "mcp"
     while time.monotonic() < deadline:
         if cancelled is not None and cancelled.is_set():
             raise RuntimeError("Claude native bridge notification was cancelled")
         payload = _read_json_file(path)
+        if managed_socket_root is not None:
+            advertised_socket = payload.get("socket")
+            if not isinstance(advertised_socket, str):
+                payload = {}
+            else:
+                socket_path = Path(advertised_socket)
+                try:
+                    socket_info = socket_path.lstat()
+                except OSError:
+                    payload = {}
+                else:
+                    if (
+                        socket_path.parent != managed_socket_root
+                        or not stat.S_ISSOCK(socket_info.st_mode)
+                        or socket_info.st_uid != os.getuid()
+                        or payload.get("url") is not None
+                    ):
+                        payload = {}
         if (
             isinstance(payload, dict)
             and payload.get("token")

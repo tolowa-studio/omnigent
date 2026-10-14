@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -92,15 +93,18 @@ def sync_raw_status_context(
     output_dir = bridge_dir / "hook-output"
     raw_path = (output_dir if output_dir.is_dir() else bridge_dir) / CONTEXT_RAW_FILE
     try:
-        stat = raw_path.stat()
+        info = raw_path.lstat()
     except OSError:
         return last_sig
-    sig = (stat.st_mtime_ns, stat.st_size)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1_048_576:
+        return last_sig
+    sig = (info.st_mtime_ns, info.st_size)
     if sig == last_sig:
         return last_sig
-    try:
-        payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    from omnigent.harnesses.claude_native.bridge import _read_json_file
+
+    payload = _read_json_file(raw_path)
+    if not payload:
         return last_sig
     if not isinstance(payload, dict):
         return sig

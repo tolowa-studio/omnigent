@@ -6,11 +6,13 @@ import asyncio
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -24,8 +26,56 @@ from omnigent.harnesses.claude_native.bridge import (
     read_transcript_path,
     record_hook_event,
 )
+from omnigent.harnesses.claude_native.forwarder import (
+    _diagnostic_file_size,
+    _log_new_observer_hook_stderr,
+    _managed_rotation_target,
+)
+from omnigent.harnesses.claude_native.status import sync_raw_status_context
 from omnigent.runner.claude_native_ipc import start_claude_native_ipc
 from omnigent.runner.native_hook_ipc import get_native_hook_ipc, post_native_hook_ipc
+from omnigent.runner.turn_routing import (
+    trace_turn_routing,
+    turn_routing_marker_session,
+    write_turn_routing_marker,
+)
+
+
+def test_claude_ipc_keeps_local_mcp_tools_without_exposing_bridge_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnigent.runner import native_hook_ipc
+
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path)
+    bridge_dir = tmp_path / "bridge"
+    (bridge_dir / "hook-ipc").mkdir(parents=True)
+    _write_json_file(
+        bridge_dir / "hook-ipc" / "local-tools.json",
+        {"workspace": str(tmp_path)},
+    )
+    monkeypatch.setenv("OMNIGENT_NATIVE_HOOK_IPC", "1")
+    monkeypatch.setattr(
+        native_hook_ipc,
+        "post_native_hook_ipc",
+        lambda _bridge, path, _payload, **_kwargs: {"tools": []} if path == "/tool-list" else None,
+    )
+
+    class LocalTool:
+        def get_schema(self) -> dict[str, object]:
+            return {"function": {"name": "sys_local", "parameters": {"type": "object"}}}
+
+        def invoke(self, raw: str, context: object) -> str:
+            assert json.loads(raw) == {"value": 1}
+            assert context.workspace == tmp_path
+            return "local result"
+
+    tools = {"sys_local": LocalTool()}
+    schemas = claude_bridge._combined_mcp_tool_schemas(tools, bridge_dir)
+    assert [row["name"] for row in schemas] == ["sys_local"]
+    assert claude_bridge._call_mcp_tool(
+        {"name": "sys_local", "arguments": {"value": 1}}, tools, bridge_dir
+    ) == {"content": [{"type": "text", "text": "local result"}]}
 
 
 @pytest.mark.asyncio
@@ -77,6 +127,9 @@ async def test_claude_ipc_binds_backend_calls_to_ap_owned_session(
         try:
             advert = json.loads((bridge_dir / "hook-ipc" / "runner-ipc.json").read_text())
             assert "backend-secret" not in json.dumps(advert)
+            local_config = json.loads((bridge_dir / "hook-ipc" / "local-tools.json").read_text())
+            assert "backend-secret" not in json.dumps(local_config)
+            assert local_config == {}
             assert await asyncio.to_thread(get_native_hook_ipc, bridge_dir) is not None
             result = await asyncio.to_thread(
                 post_native_hook_ipc,
@@ -116,6 +169,21 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
         {"bridge_id": "bridge-a", "active_session_id": "session-a"},
     )
     calls: list[tuple[str, str, dict[str, object] | None]] = []
+    route_calls: list[str] = []
+    from omnigent.harnesses.claude_native import hook as claude_hook
+    from omnigent.runner import turn_routing
+
+    old_router = SimpleNamespace(url="http://old-router", token="old-token")
+    new_router = SimpleNamespace(url="http://new-router", token="new-token")
+    monkeypatch.setattr(turn_routing, "ensure_session_turn_router", lambda *a, **k: new_router)
+    monkeypatch.setattr(turn_routing, "shutdown_session_turn_router", lambda *a, **k: None)
+
+    def route_post(url: str, token: str, *args: object) -> dict[str, object]:
+        route_calls.append(url)
+        assert token == "new-token"
+        return {"action": "route", "decision_id": "route-b", "model": "claude-sonnet"}
+
+    monkeypatch.setattr(claude_hook, "_route_turn_post", route_post)
 
     def respond(req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content) if req.content else None
@@ -129,6 +197,16 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
                     "runner_id": "runner-a",
                     "workspace": "/tmp/owned-workspace",
                     "labels": {claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a", "team": "alpha"},
+                },
+            )
+        if req.method == "GET" and req.url.path == "/v1/sessions/session-b":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "session-b",
+                    "agent_id": "agent-a",
+                    "runner_id": "runner-a",
+                    "labels": {claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a"},
                 },
             )
         if req.method == "POST" and req.url.path in {
@@ -159,6 +237,7 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
             expected_runner_id="runner-a",
             server_client=client,
             server_url="http://ap.test",
+            turn_router=old_router,
         )
         try:
             result = await asyncio.to_thread(
@@ -166,6 +245,21 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
             )
             assert result == {"session_id": "session-b"}
             assert read_active_session_id(bridge_dir) == "session-b"
+            routed = await asyncio.to_thread(
+                post_native_hook_ipc, bridge_dir, "/route-turn", {"prompt": "new task"}
+            )
+            assert routed == {
+                "action": "route",
+                "decision_id": "route-b",
+                "model": "claude-sonnet",
+                "block": True,
+            }
+            assert route_calls == ["http://new-router/v1/sessions/session-b/route-turn"]
+            assert (
+                json.loads((bridge_dir / "turn_routing_done").read_text())["session_id"]
+                == "session-b"
+            )
+            assert not (bridge_dir / "hook-output" / "turn_routing_done").exists()
         finally:
             await asyncio.to_thread(ipc.close)
             shutil.rmtree(socket_root)
@@ -254,6 +348,129 @@ def test_ipc_bridge_rejects_untrusted_transcript_pointer(
     link.symlink_to(tmp_path / "secret.jsonl")
     _write_json_file(state_path, {"claude_session_id": "claude-a", "transcript_path": str(link)})
     assert read_transcript_path(bridge_dir) is None
+
+
+def test_runner_routing_writes_cannot_follow_hook_symlinks(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    output_dir = bridge_dir / "hook-output"
+    output_dir.mkdir(parents=True)
+    (bridge_dir / "hook-ipc").mkdir()
+    (bridge_dir / "hook-ipc" / "runner-ipc.json").write_text("{}")
+    target = tmp_path / "protected.txt"
+    target.write_text("keep me")
+    (output_dir / "turn_routing.log").symlink_to(target)
+    (bridge_dir / "turn_routing_done").symlink_to(target)
+
+    trace_turn_routing(bridge_dir, "route", "test")
+    assert target.read_text() == "keep me"
+    assert turn_routing_marker_session(bridge_dir) is None
+    assert write_turn_routing_marker(bridge_dir, session_id="session-a")
+    assert target.read_text() == "keep me"
+    assert turn_routing_marker_session(bridge_dir) == "session-a"
+    assert not (bridge_dir / "turn_routing_done").is_symlink()
+
+
+def test_runner_observer_readers_reject_hook_output_symlinks(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    output_dir = bridge_dir / "hook-output"
+    output_dir.mkdir(parents=True)
+    protected = tmp_path / "protected.txt"
+    protected.write_text('{"model":"forged","context_window_size":999999}')
+    (output_dir / "context.json").symlink_to(protected)
+    (output_dir / "context.raw").symlink_to(protected)
+    (output_dir / claude_bridge.OBSERVER_HOOK_STDERR_FILE).symlink_to(protected)
+    assert claude_bridge.read_claude_context_state(bridge_dir) is None
+    assert claude_bridge.read_claude_status_model(bridge_dir) is None
+    assert sync_raw_status_context(bridge_dir, None) is None
+    assert _diagnostic_file_size(output_dir / "context.raw") is None
+    assert (
+        _log_new_observer_hook_stderr(bridge_dir=bridge_dir, session_id="session-a", byte_offset=0)
+        == 0
+    )
+
+
+def test_forged_hook_rotation_requires_runner_owned_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    bridge_dir = tmp_path / "root" / "bridge"
+    bridge_dir.mkdir(parents=True)
+    _write_json_file(bridge_dir / "bridge.json", {"active_session_id": "session-a"})
+    assert (
+        _managed_rotation_target(
+            bridge_dir,
+            kind="clear",
+            previous_session_id="session-a",
+            journal_target="session-peer",
+        )
+        is None
+    )
+    _write_json_file(
+        bridge_dir / "rotation.json",
+        {"kind": "clear", "old_session_id": "session-a", "new_session_id": "session-b"},
+    )
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="clear", previous_session_id="session-a", journal_target="session-b"
+        )
+        is None
+    )
+    _write_json_file(bridge_dir / "bridge.json", {"active_session_id": "session-b"})
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="clear", previous_session_id="session-a", journal_target="session-b"
+        )
+        == "session-b"
+    )
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="fork", previous_session_id="session-a", journal_target="session-b"
+        )
+        is None
+    )
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="clear", previous_session_id="session-b", journal_target="session-b"
+        )
+        is None
+    )
+
+
+def test_runner_notifier_rejects_spoofed_mcp_socket(tmp_path: Path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    output_dir = bridge_dir / "hook-output"
+    output_dir.mkdir(parents=True)
+    ipc_dir = bridge_dir / "hook-ipc"
+    ipc_dir.mkdir()
+    socket_dir = Path(tempfile.mkdtemp(prefix="nhi-", dir="/tmp"))
+    mcp_dir = socket_dir / "mcp"
+    mcp_dir.mkdir()
+    (ipc_dir / "runner-ipc.json").write_text(
+        json.dumps({"socket_path": str(socket_dir / "runner-ipc.sock")})
+    )
+    outside = socket_dir / "attacker.sock"
+    owned = mcp_dir / "mcp-123.sock"
+    attacker_socket = socket.socket(socket.AF_UNIX)
+    control_socket = socket.socket(socket.AF_UNIX)
+    try:
+        attacker_socket.bind(str(outside))
+        control_socket.bind(str(owned))
+        (output_dir / "server.json").write_text(
+            json.dumps({"socket": str(outside), "token": "local-control-only"})
+        )
+        with pytest.raises(RuntimeError, match="not ready"):
+            claude_bridge._wait_for_server_info(bridge_dir, timeout_s=0.05)
+        (output_dir / "server.json").write_text(
+            json.dumps({"socket": str(owned), "token": "local-control-only"})
+        )
+        assert claude_bridge._wait_for_server_info(bridge_dir, timeout_s=0.05)["socket"] == str(
+            owned
+        )
+    finally:
+        attacker_socket.close()
+        control_socket.close()
+        shutil.rmtree(socket_dir)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt probe")

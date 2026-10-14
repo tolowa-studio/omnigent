@@ -1321,9 +1321,16 @@ def _main_route_turn(argv: list[str]) -> int:
             timeout=HOOK_REQUEST_TIMEOUT_S,
         )
         if isinstance(decision, dict) and decision.get("action") == "route":
-            if decision.get("block") is True:
+            model = decision.get("model")
+            if decision.get("block") is True and isinstance(model, str) and model:
+                reason = f"Smart Routing selected {model}; rerunning your message on it."
                 sys.stdout.write(
-                    json.dumps({"decision": "block", "reason": "Omnigent is routing this prompt"})
+                    json.dumps(
+                        {
+                            "decision": "block",
+                            "reason": reason,
+                        }
+                    )
                 )
         return 0
 

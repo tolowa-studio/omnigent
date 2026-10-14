@@ -7643,6 +7643,9 @@ def create_runner_app(
                     and approval_wait_is_fresh(active_id, bridge_dir=bridge_dir)
                 ):
                     return True
+            elif approval_wait_is_fresh(conv_id):
+                # Other native harnesses retain the shared marker root.
+                return True
             # An attached viewer alone does not spare the pane (a tab left open
             # overnight kept idle native stacks resident). Count it only when a
             # human drove it recently: a CLI keypress, or any web-bridge event.

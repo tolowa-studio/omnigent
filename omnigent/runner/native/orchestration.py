@@ -8828,6 +8828,9 @@ async def _auto_create_claude_terminal(
     from omnigent.runner.identity import RUNNER_ID_ENV_VAR
 
     expected_runner_id = os.environ.get(RUNNER_ID_ENV_VAR, "")
+    _claude_turn_routers = (
+        {session_id: _claude_turn_router} if _claude_turn_router is not None else {}
+    )
     _claude_hook_ipc = start_claude_native_ipc(
         bridge_dir=bridge_dir,
         bridge_id=bridge_id,
@@ -8836,6 +8839,7 @@ async def _auto_create_claude_terminal(
         server_client=server_client,
         server_url=server_url,
         turn_router=_claude_turn_router,
+        turn_routers=_claude_turn_routers,
     )
     _claude_mcp_socket_dir = _claude_hook_ipc.socket_dir / "mcp"
     _claude_mcp_socket_dir.mkdir(mode=0o700)
@@ -9128,7 +9132,8 @@ async def _auto_create_claude_terminal(
             )
         finally:
             await _shutdown_session_router_async(session_id, _subagent_router)
-            await _shutdown_session_turn_router_async(session_id, _claude_turn_router)
+            for routed_id, routed_router in tuple(_claude_turn_routers.items()):
+                await _shutdown_session_turn_router_async(routed_id, routed_router)
             await asyncio.to_thread(_claude_hook_ipc.close)
             with contextlib.suppress(OSError):
                 _claude_mcp_socket_dir.rmdir()

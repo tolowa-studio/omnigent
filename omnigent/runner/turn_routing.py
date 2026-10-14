@@ -78,8 +78,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import secrets
+import stat
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -137,6 +140,11 @@ def _hook_state_path(bridge_dir: Path, filename: str) -> Path:
     they are prepared again. New bridge preparation creates ``hook-output``
     before launching the sandboxed child.
     """
+    # The IPC route callback runs in the trusted runner. Its replay marker
+    # must not be writable by the sandboxed model shell: that would let a
+    # forged marker satisfy the block/replay handshake.
+    if filename == MARKER_FILE and (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        return bridge_dir / filename
     output_dir = bridge_dir / "hook-output"
     return (output_dir if output_dir.is_dir() else bridge_dir) / filename
 
@@ -259,9 +267,19 @@ def trace_turn_routing(bridge_dir: Path, outcome: str, detail: str = "") -> None
         {"at": time.time(), "outcome": outcome, "detail": detail},
         separators=(",", ":"),
     )
+    path = _hook_state_path(bridge_dir, TRACE_FILE)
     try:
-        with _hook_state_path(bridge_dir, TRACE_FILE).open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                os.write(fd, (line + "\n").encode())
+        finally:
+            os.close(fd)
     except OSError:
         pass
     # Also on stderr: the harness keeps hook stderr in its own logs, which
@@ -396,10 +414,21 @@ def write_turn_routing_marker(
         owe this prompt a replay" handshake.
     """
     body = {"session_id": session_id, "decision_id": decision_id, "at": time.time()}
+    path = _hook_state_path(bridge_dir, MARKER_FILE)
+    temporary: str | None = None
     try:
-        _hook_state_path(bridge_dir, MARKER_FILE).write_text(json.dumps(body), encoding="utf-8")
+        fd, temporary = tempfile.mkstemp(prefix=f".{MARKER_FILE}.", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(body, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
     except OSError:
         return False
+    finally:
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
     return True
 
 
@@ -411,7 +440,17 @@ def turn_routing_marker_session(bridge_dir: Path) -> str | None:
         unreadable, or it predates the scoping (a bare file).
     """
     try:
-        raw = json.loads(_hook_state_path(bridge_dir, MARKER_FILE).read_text(encoding="utf-8"))
+        fd = os.open(
+            _hook_state_path(bridge_dir, MARKER_FILE),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK,
+        )
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
+                return None
+            raw = json.loads(os.read(fd, 4097))
+        finally:
+            os.close(fd)
     except (OSError, ValueError):
         return None
     return _opt_str(raw.get("session_id")) if isinstance(raw, dict) else None
