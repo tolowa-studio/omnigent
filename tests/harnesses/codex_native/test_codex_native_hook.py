@@ -179,6 +179,70 @@ def _run_hook(
     return codex_native_hook.main(["evaluate-policy", "--bridge-dir", str(bridge_dir)])
 
 
+def test_pre_tool_use_runner_ipc_denies_without_bridge_bearer(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from omnigent.runner import native_hook_ipc
+
+    (bridge_dir / "hook-ipc").mkdir()
+    (bridge_dir / "hook-ipc" / "runner-ipc.json").write_text("{}", encoding="utf-8")
+    (bridge_dir / "policy_hook.json").write_text("not readable by hook", encoding="utf-8")
+    seen: list[str] = []
+
+    def post(bridge: Path, path: str, body: dict, *, timeout: float) -> dict:
+        seen.append(path)
+        assert bridge == bridge_dir
+        assert body["evaluation_request"]["event"]["type"] == "PHASE_TOOL_CALL"
+        return {"evaluation_response": {"result": "POLICY_ACTION_DENY", "reason": "blocked"}}
+
+    monkeypatch.setattr(native_hook_ipc, "post_native_hook_ipc", post)
+    assert (
+        _run_hook(
+            bridge_dir,
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm x"},
+            },
+            monkeypatch,
+        )
+        == 0
+    )
+    assert seen == ["/policy-evaluate"]
+    assert (
+        json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    )
+
+
+def test_pre_tool_use_runner_ipc_unavailable_fails_closed(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from omnigent.runner import native_hook_ipc
+
+    (bridge_dir / "hook-ipc").mkdir()
+    (bridge_dir / "hook-ipc" / "runner-ipc.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(native_hook_ipc, "post_native_hook_ipc", lambda *args, **kwargs: None)
+    assert (
+        _run_hook(
+            bridge_dir,
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm x"},
+            },
+            monkeypatch,
+        )
+        == 0
+    )
+    assert (
+        json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    )
+
+
 def test_pre_tool_use_converts_posts_and_returns_deny(
     bridge_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

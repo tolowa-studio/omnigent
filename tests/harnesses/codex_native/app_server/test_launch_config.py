@@ -141,6 +141,34 @@ def test_native_codex_resource_attributes_reach_server_and_terminal(
         }
 
 
+def test_codex_terminal_env_omits_provider_and_proxy_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The remote TUI's model shell must not inherit app-server auth values."""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("DATABRICKS_CODEX_TOKEN", "test-secret")
+    monkeypatch.setenv("HTTPS_PROXY", "http://test-secret@proxy.invalid")
+    app_server = SimpleNamespace(
+        codex_home=tmp_path / "codex-home",
+        env={
+            "OPENAI_API_KEY": "test-secret",
+            "DATABRICKS_CODEX_TOKEN": "test-secret",
+            "HTTPS_PROXY": "http://test-secret@proxy.invalid",
+            "DATABRICKS_HOST": "https://example.invalid",
+            "NO_PROXY": "127.0.0.1,localhost",
+        },
+    )
+    terminal_env = codex_terminal_env(app_server)
+    assert terminal_env["CODEX_HOME"] == str(tmp_path / "codex-home")
+    assert terminal_env["NO_PROXY"] == "127.0.0.1,localhost"
+    assert "OPENAI_API_KEY" not in terminal_env
+    assert "DATABRICKS_CODEX_TOKEN" not in terminal_env
+    assert "HTTPS_PROXY" not in terminal_env
+
+
 def test_build_codex_native_server_without_bypass_emits_no_bypass_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

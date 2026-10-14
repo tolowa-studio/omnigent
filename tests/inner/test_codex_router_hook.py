@@ -518,6 +518,34 @@ def test_route_subagent_tolerates_unknown_flags(
     assert router.calls[0]["session_id"] == "conv_abc"
 
 
+def test_route_subagent_uses_runner_ipc_without_reading_router_bearer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnigent.runner import native_hook_ipc
+
+    (tmp_path / "hook-ipc").mkdir()
+    (tmp_path / "hook-ipc" / "runner-ipc.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "subagent_router.json").write_text(
+        '{"token":"protected-runner-bearer"}', encoding="utf-8"
+    )
+    seen: list[tuple[Path, str, dict[str, Any]]] = []
+
+    def post(bridge: Path, path: str, payload: dict[str, Any], *, timeout: float) -> dict:
+        seen.append((bridge, path, payload))
+        assert timeout == 15.0
+        return {"output": {"hookSpecificOutput": {"permissionDecision": "allow"}}}
+
+    monkeypatch.setattr(native_hook_ipc, "post_native_hook_ipc", post)
+    monkeypatch.setattr(hook.sys, "stdin", _Stdin(json.dumps(_payload())))
+    out = io.StringIO()
+    monkeypatch.setattr(hook.sys, "stdout", out)
+
+    assert hook.main(["route-subagent", "--bridge-dir", str(tmp_path)]) == 0
+    assert seen == [(tmp_path, "/route-subagent", {"payload": _payload()})]
+    assert json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert "protected-runner-bearer" not in out.getvalue()
+
+
 def test_unknown_subcommand_is_a_no_op(capsys: pytest.CaptureFixture[str]) -> None:
     assert hook.main(["nope"]) == 0
     assert "unknown subcommand" in capsys.readouterr().err

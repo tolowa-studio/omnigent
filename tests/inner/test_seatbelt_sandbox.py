@@ -922,6 +922,23 @@ def test_profile_emits_stat_only_ancestor_allows_for_cwd_under_home(
     )
 
 
+def test_opt_in_cwd_ancestor_directory_reads_are_literal_only() -> None:
+    cwd = Path("/Users/regression-test-XXX/workspace")
+    policy = _make_policy(cwd)
+    policy.cwd_ancestor_directory_read = True
+    policy = type(policy).from_jsonable(policy.to_jsonable())
+    profile = _build_profile(policy, cwd)
+    for ancestor in ("/Users", "/Users/regression-test-XXX"):
+        assert f'(allow file-read-data (literal "{ancestor}"))' in profile
+        assert f'(allow file-read* (subpath "{ancestor}"))' not in profile
+    assert '(allow file-read-data (literal "/Users/regression-test-XXX/workspace"))' not in profile
+
+    policy.cwd_ancestor_directory_read = False
+    assert '(allow file-read-data (literal "/Users/regression-test-XXX"))' not in (
+        _build_profile(policy, cwd)
+    )
+
+
 def test_profile_skips_ancestor_allows_already_covered_by_default_subpaths(
     tmp_path: Path,
 ) -> None:

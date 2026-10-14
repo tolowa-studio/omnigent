@@ -603,6 +603,10 @@ class OSEnvSandboxSpec:
     # the entry cap; the resulting :class:`OSError` names the
     # offending root and the tunables.
     read_paths: list[str] | None = None
+    # Some native CLIs enumerate each cwd ancestor while loading config.
+    # Seatbelt normally grants only stat on those directories. Opt in to
+    # exact-directory entry reads without exposing sibling file contents.
+    cwd_ancestor_directory_read: bool = False
     write_paths: list[str | WritePathSpec] | None = None
 
     # Per-file write grants. Use this for single files that can't be
