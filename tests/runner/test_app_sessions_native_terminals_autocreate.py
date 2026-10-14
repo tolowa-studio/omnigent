@@ -4299,6 +4299,11 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     codex_home / "config.toml",
                     codex_home / "hooks.json",
                 ):
+                    read = subprocess.run(
+                        ["/usr/bin/sandbox-exec", "-p", profile, "/bin/cat", str(protected)],
+                        capture_output=True,
+                        check=False,
+                    )
                     write = subprocess.run(
                         [
                             "/usr/bin/sandbox-exec",
@@ -4310,6 +4315,7 @@ async def test_codex_tui_grants_only_its_session_bridge(
                         capture_output=True,
                         check=False,
                     )
+                    assert read.returncode == 0
                     assert write.returncode != 0
                     assert protected.read_text(encoding="utf-8") == "protected"
 
