@@ -3981,7 +3981,16 @@ def _read_complete_jsonl_records(
     cursor = start_line
     position = byte_offset
     try:
-        with path.open("rb") as handle:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            getuid = getattr(os, "getuid", None)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or (getuid is not None and info.st_uid != getuid())
+            ):
+                raise OSError("JSONL input is not an owned regular file")
             handle.seek(0, os.SEEK_END)
             file_size = handle.tell()
             if byte_offset > file_size:
@@ -4013,7 +4022,7 @@ def _read_complete_jsonl_records(
                         text=text,
                     )
                 )
-    except FileNotFoundError:
+    except OSError:
         return _JsonlReadResult(
             line_cursor=start_line,
             byte_offset=byte_offset,
@@ -9364,12 +9373,26 @@ def _read_json_file(path: Path) -> _JsonObject:
     :returns: Parsed object, or ``{}`` when missing/malformed.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return {}
+            getuid = getattr(os, "getuid", None)
+            if getuid is not None and info.st_uid != getuid():
+                return {}
+            if info.st_size > 1_048_576:
+                return {}
+            raw = os.read(fd, 1_048_577)
+        finally:
+            os.close(fd)
+    except OSError:
+        return {}
+    if len(raw) > 1_048_576:
         return {}
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
 

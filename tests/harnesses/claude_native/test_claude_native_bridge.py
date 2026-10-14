@@ -12532,6 +12532,34 @@ def test_hook_output_survives_session_rotation_without_rewriting_bridge_config(
     assert (bridge_dir / "hook-output" / TRACE_FILE).is_file()
 
 
+def test_bridge_json_reader_rejects_symlink_and_non_object(tmp_path: Path) -> None:
+    """A hook-output symlink cannot make the runner read a private file."""
+    private = tmp_path / "private.json"
+    private.write_text('{"token":"private"}')
+    output_dir = tmp_path / "hook-output"
+    output_dir.mkdir()
+    linked = output_dir / "state.json"
+    linked.symlink_to(private)
+    assert claude_native_bridge._read_json_file(linked) == {}
+    linked.unlink()
+    linked.write_text("[]")
+    assert claude_native_bridge._read_json_file(linked) == {}
+
+
+def test_hook_journal_reader_rejects_symlink(tmp_path: Path) -> None:
+    """A hook cannot redirect the unrestricted forwarder to another file."""
+    bridge_dir = tmp_path / "bridge"
+    output_dir = bridge_dir / "hook-output"
+    output_dir.mkdir(parents=True)
+    private = tmp_path / "private.jsonl"
+    private.write_text('{"payload":{"hook_event_name":"Stop"}}\n')
+    (output_dir / "hooks.jsonl").symlink_to(private)
+
+    result = read_hook_events_from_offset(bridge_dir, 0, start_event_count=0)
+
+    assert result.records == []
+
+
 def test_hold_approval_wait_marker_refreshes_until_released(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
