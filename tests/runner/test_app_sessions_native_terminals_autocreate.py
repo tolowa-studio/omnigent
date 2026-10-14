@@ -4243,6 +4243,14 @@ async def test_codex_tui_grants_only_its_session_bridge(
                 )
             )
             assert launched.write_files == [str(codex_home / "state_5.sqlite")]
+            from omnigent.runner.turn_routing import (
+                turn_routing_marker_present,
+                write_turn_routing_marker,
+            )
+
+            assert write_turn_routing_marker(bridge_dir, session_id="conv_codex_own_bridge")
+            assert (bridge_dir / "hook-output" / "turn_routing_done").is_file()
+            assert turn_routing_marker_present(bridge_dir, "conv_codex_own_bridge")
         assert launched.read_paths == expected_read
         assert launched.write_paths == expected
         assert str(tmp_path / "bridges" / "peer") not in launched.write_paths
@@ -4299,6 +4307,18 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     check=False,
                 )
                 assert sqlite_write.returncode == 0
+                marker_write = subprocess.run(
+                    [
+                        "/usr/bin/sandbox-exec",
+                        "-p",
+                        profile,
+                        "/usr/bin/touch",
+                        str(bridge_dir / "hook-output" / "turn_routing_done"),
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                assert marker_write.returncode == 0
                 for protected in (
                     bridge_dir / "bridge.json",
                     codex_home / "auth.json",
