@@ -501,6 +501,51 @@ def test_ipc_bridge_rejects_untrusted_transcript_pointer(
     assert read_transcript_path(bridge_dir) is None
 
 
+def test_managed_observer_accepts_launcher_isolated_claude_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    bridge_dir = tmp_path / "root" / "bridge"
+    (bridge_dir / "hook-ipc").mkdir(parents=True)
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
+    project = home / ".claude-lean" / "projects" / "workspace"
+    project.mkdir(parents=True)
+    transcript = project / "claude-a.jsonl"
+    transcript.write_text("{}\n")
+
+    record_hook_event(
+        bridge_dir,
+        {"hook_event_name": "Stop", "session_id": "claude-a", "transcript_path": str(transcript)},
+    )
+    assert read_transcript_path(bridge_dir) == transcript
+
+    other = home / "other" / "projects" / "workspace"
+    other.mkdir(parents=True)
+    untrusted = other / "claude-a.jsonl"
+    untrusted.write_text("{}\n")
+    _write_json_file(
+        bridge_dir / "hook-output" / "state.json",
+        {"claude_session_id": "claude-a", "transcript_path": str(untrusted)},
+    )
+    assert read_transcript_path(bridge_dir) is None
+
+    linked = home / ".claude-linked"
+    linked.symlink_to(other)
+    _write_json_file(
+        bridge_dir / "hook-output" / "state.json",
+        {
+            "claude_session_id": "claude-a",
+            "transcript_path": str(linked / "projects/workspace/claude-a.jsonl"),
+        },
+    )
+    assert read_transcript_path(bridge_dir) is None
+
+
 def test_runner_routing_writes_cannot_follow_hook_symlinks(tmp_path: Path) -> None:
     bridge_dir = tmp_path / "bridge"
     output_dir = bridge_dir / "hook-output"

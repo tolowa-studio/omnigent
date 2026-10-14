@@ -2947,14 +2947,25 @@ def read_transcript_path(bridge_dir: Path) -> Path | None:
 
 
 def validated_claude_transcript_path(path: Path, claude_id: str) -> Path | None:
-    """Confine a journal-supplied transcript to this user's Claude project tree."""
-    config_root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-    transcript_root = config_root / "projects"
+    """Confine a journal-supplied transcript to a user-owned Claude profile."""
+    home = Path.home()
+    config_root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude")
+    roots = [config_root]
+    # A configured Claude launcher may set CLAUDE_CONFIG_DIR only inside its
+    # terminal process. The runner cannot inherit that later env change. Allow
+    # conventional isolated profiles directly under the user's home, without
+    # accepting an arbitrary hook-supplied root or following a profile symlink.
+    profile_root = path.parent.parent.parent
+    if (
+        profile_root.parent == home
+        and profile_root.name.startswith(".claude-")
+        and profile_root not in roots
+    ):
+        roots.append(profile_root)
     try:
         if path.name != f"{claude_id}.jsonl" or path.is_symlink():
             return None
         resolved = path.resolve(strict=True)
-        resolved.relative_to(transcript_root.resolve(strict=True))
         stat_result = path.stat(follow_symlinks=False)
         if (
             not stat.S_ISREG(stat_result.st_mode)
@@ -2962,9 +2973,20 @@ def validated_claude_transcript_path(path: Path, claude_id: str) -> Path | None:
             or stat_result.st_nlink != 1
         ):
             return None
+        for root in roots:
+            transcript_root = root / "projects"
+            if root.is_symlink() or transcript_root.is_symlink():
+                continue
+            try:
+                if root.stat(follow_symlinks=False).st_uid != os.getuid():
+                    continue
+                resolved.relative_to(transcript_root.resolve(strict=True))
+            except (OSError, ValueError):
+                continue
+            return path
     except (OSError, ValueError):
         return None
-    return path
+    return None
 
 
 def read_claude_session_id(bridge_dir: Path) -> str | None:
