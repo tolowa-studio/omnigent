@@ -4145,6 +4145,7 @@ async def test_codex_tui_grants_only_its_session_bridge(
     for name in ("auth.json", "config.toml", "hooks.json"):
         (codex_home / name).write_text("protected", encoding="utf-8")
     (bridge_dir / "bridge.json").write_text("protected", encoding="utf-8")
+    (bridge_dir / "policy_hook.json").write_text("protected", encoding="utf-8")
     (codex_home / "state_5.sqlite").write_text("state", encoding="utf-8")
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
     captured: dict[str, Any] = {}
@@ -4271,6 +4272,7 @@ async def test_codex_tui_grants_only_its_session_bridge(
                 assert sqlite_write.returncode == 0
                 for protected in (
                     bridge_dir / "bridge.json",
+                    bridge_dir / "policy_hook.json",
                     codex_home / "auth.json",
                     codex_home / "config.toml",
                     codex_home / "hooks.json",
