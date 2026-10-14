@@ -4725,8 +4725,13 @@ async def _launch_codex_native_tui(
         # Bearer-bearing bridge siblings are invisible. The private home is
         # readable for Codex state/config, except for its copied auth token.
         # The hook-output marker is runner-owned and never shell-writable.
+        # Codex 0.157 enumerates cwd ancestors during config loading; the
+        # usual stat-only Seatbelt traversal causes TUI startup EPERM. Keep
+        # this exact-directory read grant local to macOS Codex and recheck it
+        # when updating Codex, since its config scan may change.
         terminal_sandbox = dataclasses.replace(
             terminal_sandbox,
+            cwd_ancestor_directory_read=terminal_sandbox.type == "darwin_seatbelt",
             read_paths=[
                 *(terminal_sandbox.read_paths or []),
                 str(codex_home),
