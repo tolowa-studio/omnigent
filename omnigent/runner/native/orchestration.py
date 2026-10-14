@@ -72,6 +72,7 @@ from omnigent.native.native_coding_agents import (
 )
 from omnigent.native.native_dispatch import resolve_hook
 from omnigent.process_logging import process_log_reference
+from omnigent.runner.native_hook_ipc import NativeHookIPC
 from omnigent.runner.resource_registry import (
     ANTIGRAVITY_NATIVE_TERMINAL_ROLE,
     CLAUDE_NATIVE_TERMINAL_ROLE,
@@ -237,13 +238,14 @@ async def teardown_codex_native_app_server(session_id: str) -> None:
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :returns: None.
     """
-    if session_id not in _AUTO_CODEX_APP_SERVERS:
+    if session_id not in _AUTO_CODEX_APP_SERVERS and session_id not in _AUTO_CODEX_HOOK_IPCS:
         return
     await _cancel_auto_forwarder_task(session_id)
     leftover_app_server = _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
     if leftover_app_server is not None:
         with contextlib.suppress(Exception):
             await leftover_app_server.close()
+    await _close_codex_hook_ipc(session_id)
 
 
 async def teardown_all_codex_native_app_servers() -> None:
@@ -360,6 +362,17 @@ _CODEX_SIGN_IN_POLL_INTERVAL_S = 2.0
 # Background Codex app-server instances for host-spawned codex-native
 # runners, kept referenced so they aren't garbage-collected mid-run.
 _AUTO_CODEX_APP_SERVERS: dict[str, CodexNativeAppServer] = {}
+_AUTO_CODEX_HOOK_IPCS: dict[str, NativeHookIPC] = {}
+
+
+async def _close_codex_hook_ipc(session_id: str, expected: NativeHookIPC | None = None) -> None:
+    """Close only this launch's IPC, preserving a newer replacement."""
+    current = _AUTO_CODEX_HOOK_IPCS.get(session_id)
+    if current is None or (expected is not None and current is not expected):
+        return
+    _AUTO_CODEX_HOOK_IPCS.pop(session_id, None)
+    await asyncio.to_thread(current.close)
+
 
 # Background OpenCode ``opencode serve`` instances for host-spawned
 # opencode-native runners, kept referenced so they aren't garbage-collected
@@ -4555,6 +4568,7 @@ async def _launch_codex_native_tui(
     thread_id: str | None,
     agent_spec: AgentSpec | ResolvedSpec | None,
     login_required: bool = False,
+    hook_ipc: NativeHookIPC | None = None,
 ) -> _CodexNativeTuiLaunch:
     """Attach a terminal to an app-server without owning its lifecycle."""
     from omnigent.harnesses.codex_native.app_server import (
@@ -4665,6 +4679,8 @@ async def _launch_codex_native_tui(
         "darwin_seatbelt",
         "linux_bwrap",
     }:
+        if hook_ipc is None:
+            raise RuntimeError("Codex terminal requires runner-owned hook IPC")
         codex_home = app_server.codex_home
         if (
             codex_home != bridge_dir / "codex-home"
@@ -4674,11 +4690,13 @@ async def _launch_codex_native_tui(
         ):
             raise RuntimeError("Codex terminal home is outside its private session bridge")
         hook_output = bridge_dir / "hook-output"
+        if hook_output.is_symlink():
+            raise RuntimeError("Codex terminal state path must not be a symlink")
+        hook_output.mkdir(mode=0o700, exist_ok=True)
         state_dirs = [
             codex_home / "sessions",
             codex_home / "tmp",
             codex_home / "mcp-oauth-locks",
-            hook_output,
         ]
         for path in state_dirs:
             if path.is_symlink():
@@ -4704,10 +4722,21 @@ async def _launch_codex_native_tui(
                     raise RuntimeError("Codex terminal state path must not be a symlink")
                 sidecar.touch(mode=0o600, exist_ok=True)
                 state_files.append(sidecar)
-        # Keep auth, config, hooks, and bridge bearer files read-only.
+        # Bearer-bearing bridge siblings are invisible. The private home is
+        # readable for Codex state/config, except for its copied auth token.
+        # The hook-output marker is runner-owned and never shell-writable.
         terminal_sandbox = dataclasses.replace(
             terminal_sandbox,
-            read_paths=[*(terminal_sandbox.read_paths or []), str(bridge_dir)],
+            read_paths=[
+                *(terminal_sandbox.read_paths or []),
+                str(codex_home),
+                str(bridge_dir / "hook-ipc"),
+                str(hook_ipc.socket_dir),
+            ],
+            mask_paths=[
+                *(terminal_sandbox.mask_paths or []),
+                str(codex_home / "auth.json"),
+            ],
             write_paths=[
                 *(terminal_sandbox.write_paths or []),
                 *(str(path) for path in state_dirs),
@@ -4732,6 +4761,7 @@ async def _launch_codex_native_tui(
             command=codex_command,
             args=codex_launch_args,
             env=codex_terminal_env(app_server),
+            inherit_env=False,
             # Match the local ``omnigent codex`` terminal scrollback.
             scrollback=100_000,
             # Preserve the final frame and exit status until lifecycle cleanup.
@@ -5409,8 +5439,30 @@ async def _auto_create_codex_terminal(
         server_client=server_client,
         turn_routing=launch_config.turn_routing,
     )
+    from omnigent.harnesses.codex_native.runner_ipc import codex_native_ipc_handlers
+    from omnigent.runner.native_hook_ipc import start_native_hook_ipc
+
+    await _close_codex_hook_ipc(session_id)
+    _codex_hook_ipc = start_native_hook_ipc(
+        bridge_dir=bridge_dir,
+        bridge_id=bridge_dir.name,
+        session_id=session_id,
+        handlers=codex_native_ipc_handlers(
+            bridge_dir=bridge_dir,
+            bridge_id=bridge_dir.name,
+            session_id=session_id,
+            server_client=server_client,
+            runner_loop=asyncio.get_running_loop(),
+            turn_router=_codex_turn_router,
+        ),
+    )
+    _AUTO_CODEX_HOOK_IPCS[session_id] = _codex_hook_ipc
     app_server.listen_url = codex_ws_url
-    await app_server.start()
+    try:
+        await app_server.start()
+    except BaseException:
+        await _close_codex_hook_ipc(session_id, _codex_hook_ipc)
+        raise
     _AUTO_CODEX_APP_SERVERS[session_id] = app_server
 
     event_client = CodexAppServerClient(
@@ -5439,6 +5491,7 @@ async def _auto_create_codex_terminal(
                 with contextlib.suppress(Exception):
                     await app_server.close()
                 _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
+                await _close_codex_hook_ipc(session_id, _codex_hook_ipc)
                 raise
             # Codex cannot load this thread's rollout, so no retry can resume
             # it. Start a fresh thread on the same app-server instead of
@@ -5474,6 +5527,7 @@ async def _auto_create_codex_terminal(
                 await event_client.close()
             await app_server.close()
             _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
+            await _close_codex_hook_ipc(session_id, _codex_hook_ipc)
             raise
 
     # Register the Codex TUI as a streamable terminal resource attached to
@@ -5540,6 +5594,7 @@ async def _auto_create_codex_terminal(
             thread_id=launch_config.external_session_id,
             agent_spec=agent_spec,
             login_required=_codex_launch.login_required,
+            hook_ipc=_codex_hook_ipc,
         )
         terminal_view = launched.view
         terminal_instance = launched.terminal_instance
@@ -5550,6 +5605,7 @@ async def _auto_create_codex_terminal(
         with contextlib.suppress(Exception):
             await app_server.close()
         _AUTO_CODEX_APP_SERVERS.pop(session_id, None)
+        await _close_codex_hook_ipc(session_id, _codex_hook_ipc)
         raise
 
     # Known-thread resumes publish bridge state before the terminal starts;
@@ -5591,6 +5647,7 @@ async def _auto_create_codex_terminal(
                 thread_start_timeout_seconds=thread_start_timeout_seconds,
                 subagent_router=_codex_router,
                 turn_router=_codex_turn_router,
+                hook_ipc=_codex_hook_ipc,
             )
             if launch_config.external_session_id is None
             else _codex_forward_known_thread(
@@ -5602,6 +5659,7 @@ async def _auto_create_codex_terminal(
                 app_server=app_server,
                 subagent_router=_codex_router,
                 turn_router=_codex_turn_router,
+                hook_ipc=_codex_hook_ipc,
             )
         ),
         name=f"codex-forwarder-{session_id}",
@@ -5831,6 +5889,7 @@ async def _codex_discover_thread_and_forward(
     thread_start_timeout_seconds: float | None = None,
     subagent_router: SubagentRouter | None = None,
     turn_router: TurnRouter | None = None,
+    hook_ipc: NativeHookIPC | None = None,
 ) -> None:
     """
     Adopt the fresh Codex TUI's thread, then mirror it into the Omnigent session.
@@ -6225,6 +6284,7 @@ async def _codex_discover_thread_and_forward(
                 await leftover_app_server.close()
         await _shutdown_session_router_async(session_id, subagent_router)
         await _shutdown_session_turn_router_async(session_id, turn_router)
+        await _close_codex_hook_ipc(session_id, hook_ipc)
 
 
 async def _codex_forward_known_thread(
@@ -6237,6 +6297,7 @@ async def _codex_forward_known_thread(
     app_server: CodexNativeAppServer | None = None,
     subagent_router: SubagentRouter | None = None,
     turn_router: TurnRouter | None = None,
+    hook_ipc: NativeHookIPC | None = None,
 ) -> None:
     """
     Forward a runner-owned Codex terminal that resumes an existing thread.
@@ -6310,6 +6371,7 @@ async def _codex_forward_known_thread(
                 await leftover_app_server.close()
         await _shutdown_session_router_async(session_id, subagent_router)
         await _shutdown_session_turn_router_async(session_id, turn_router)
+        await _close_codex_hook_ipc(session_id, hook_ipc)
 
 
 async def _run_antigravity_reader(

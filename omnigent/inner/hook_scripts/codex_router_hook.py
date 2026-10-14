@@ -24,12 +24,15 @@ degrading it. See :mod:`omnigent.models.codex_model_vocabulary`.
 
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from omnigent.inner.hook_scripts.subagent_router import (
+    parse_hook_args,
+    read_stdin_payload,
     run_route_subagent_main,
 )
 from omnigent.models.codex_model_vocabulary import clamp_spawn_effort, codex_spawn_model
@@ -57,6 +60,25 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = sys.argv[1:] if argv is None else argv
     command = raw_argv[0] if raw_argv else ""
     if command == "route-subagent":
+        args = parse_hook_args(_prog(command), raw_argv[1:])
+        bridge_dir = (
+            Path(args.bridge_dir or args.router_dir)
+            if (args.bridge_dir or args.router_dir)
+            else None
+        )
+        if bridge_dir is not None and (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+            from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+            payload = read_stdin_payload(_LABEL)
+            if payload is None:
+                return 0
+            result = post_native_hook_ipc(
+                bridge_dir, "/route-subagent", {"payload": payload}, timeout=15.0
+            )
+            output = result.get("output") if result is not None else None
+            if isinstance(output, dict):
+                sys.stdout.write(json.dumps(output))
+            return 0
         return run_route_subagent_main(
             raw_argv[1:],
             prog=_prog(command),

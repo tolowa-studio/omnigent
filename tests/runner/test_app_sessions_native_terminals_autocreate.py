@@ -4143,6 +4143,14 @@ async def test_codex_tui_grants_only_its_session_bridge(
     workspace.mkdir()
     bridge_dir = tmp_path / "bridges" / "own"
     bridge_dir.mkdir(parents=True)
+    from omnigent.runner.native_hook_ipc import start_native_hook_ipc
+
+    hook_ipc = start_native_hook_ipc(
+        bridge_dir=bridge_dir,
+        bridge_id="own",
+        session_id="conv_codex_own_bridge",
+        handlers={},
+    )
     peer_dir = tmp_path / "bridges" / "peer"
     peer_dir.mkdir()
     peer_database = peer_dir / "logs_2.sqlite"
@@ -4203,9 +4211,10 @@ async def test_codex_tui_grants_only_its_session_bridge(
         bridge_dir=bridge_dir,
         thread_id=None,
         agent_spec=agent_spec,
+        hook_ipc=hook_ipc,
     )
-
     launched = captured["spec"].os_env.sandbox
+    assert captured["spec"].inherit_env is False
     if sandbox_type is None:
         assert launched is None
     else:
@@ -4214,16 +4223,18 @@ async def test_codex_tui_grants_only_its_session_bridge(
         expected_read = ["/existing/read"]
         expected = ["/existing/write"]
         if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
-            expected_read.append(str(bridge_dir))
+            expected_read.extend(
+                [str(codex_home), str(bridge_dir / "hook-ipc"), str(hook_ipc.socket_dir)]
+            )
             expected.extend(
                 str(path)
                 for path in (
                     codex_home / "sessions",
                     codex_home / "tmp",
                     codex_home / "mcp-oauth-locks",
-                    bridge_dir / "hook-output",
                 )
             )
+            assert launched.mask_paths == [str(codex_home / "auth.json")]
             assert launched.write_files == [
                 str(state_db),
                 str(codex_home / "state_5.sqlite-wal"),
@@ -4322,7 +4333,7 @@ async def test_codex_tui_grants_only_its_session_bridge(
                     capture_output=True,
                     check=False,
                 )
-                assert marker_write.returncode == 0
+                assert marker_write.returncode != 0
                 for protected in (
                     bridge_dir / "bridge.json",
                     bridge_dir / "policy_hook.json",
@@ -4346,9 +4357,13 @@ async def test_codex_tui_grants_only_its_session_bridge(
                         capture_output=True,
                         check=False,
                     )
-                    assert read.returncode == 0
+                    if protected.name in {"config.toml", "hooks.json"}:
+                        assert read.returncode == 0
+                    else:
+                        assert read.returncode != 0
                     assert write.returncode != 0
                     assert protected.read_text(encoding="utf-8") == "protected"
+    hook_ipc.close()
 
 
 @pytest.mark.asyncio
@@ -4430,6 +4445,7 @@ async def test_codex_tui_rejects_unsafe_session_state_paths(
             bridge_dir=bridge_dir,
             thread_id=None,
             agent_spec=agent_spec,
+            hook_ipc=SimpleNamespace(socket_dir=tmp_path / "ipc"),  # type: ignore[arg-type]
         )
 
 

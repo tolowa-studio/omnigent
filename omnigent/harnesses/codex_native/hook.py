@@ -120,6 +120,34 @@ def _main_evaluate_policy(argv: list[str]) -> int:
         return 0
 
     bridge_dir = Path(args.bridge_dir)
+    ipc_advertised = (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file()
+    if ipc_advertised:
+        from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+        hook_event = payload.get("hook_event_name", "")
+        eval_request = hook_payload_to_evaluation_request(hook_event, payload)
+        if eval_request is None:
+            return 0
+        context = eval_request["event"]["context"]
+        context["harness"] = "codex-native"
+        live_model = payload.get("model")
+        if isinstance(live_model, str) and live_model:
+            context["model"] = live_model
+        result = post_native_hook_ipc(
+            bridge_dir,
+            "/policy-evaluate",
+            {"evaluation_request": eval_request},
+            timeout=_EVALUATE_POLICY_TIMEOUT_S,
+        )
+        verdict = result.get("evaluation_response") if result is not None else None
+        if not isinstance(verdict, dict):
+            output = fail_ask_hook_output(hook_event, "runner policy transport unavailable")
+        else:
+            output = evaluation_response_to_hook_output(hook_event, verdict)
+        if output is not None:
+            sys.stdout.write(json.dumps(output))
+        return 0
+
     state = read_bridge_state(bridge_dir)
     if state is None:
         return 0
@@ -283,6 +311,32 @@ def _main_route_turn(argv: list[str]) -> int:
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         trace_turn_routing(bridge_dir, "skip", "no prompt text on this submit")
+        return 0
+
+    if (bridge_dir / "hook-ipc" / "runner-ipc.json").is_file():
+        from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+        decision = post_native_hook_ipc(
+            bridge_dir,
+            "/route-turn",
+            {
+                "harness": args.harness,
+                "prompt": prompt,
+                "turn_id": _payload_str(payload, "turn_id"),
+                "model": _payload_str(payload, "model"),
+            },
+            timeout=HOOK_REQUEST_TIMEOUT_S + 5,
+        )
+        if decision is not None and decision.get("block") is True:
+            trace_turn_routing(bridge_dir, "route", "runner blocked and switched")
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": "Smart Routing selected a model; rerunning your message on it.",
+                    }
+                )
+            )
         return 0
 
     from omnigent.inner.hook_scripts.subagent_router import read_router_endpoint
