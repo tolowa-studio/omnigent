@@ -436,6 +436,7 @@ class SeatbeltSandboxBackend(SandboxBackend):
             write_roots=write_roots,
             write_files=write_files,
             allow_network=sandbox_spec.allow_network,
+            cwd_ancestor_directory_read=sandbox_spec.cwd_ancestor_directory_read,
             cwd_allow_hidden=cwd_allow_hidden,
             cwd_hidden_scan_max_entries=sandbox_spec.cwd_hidden_scan_max_entries,
             cwd_hidden_scan_overflow=sandbox_spec.cwd_hidden_scan_overflow,
@@ -977,6 +978,16 @@ def _build_profile(
         lines.append(";; Ancestor traversal (stat-only) for realpath()/lstat() walks")
         for ancestor in ancestor_literals:
             lines.append(f"(allow file-read-metadata (literal {_quote(str(ancestor))}))")
+
+    if policy.cwd_ancestor_directory_read:
+        # Codex 0.157 enumerates cwd's ancestors during config loading.
+        # A literal grant on each canonical directory permits enumeration
+        # there without permitting reads of files in sibling directories.
+        lines.append("")
+        lines.append(";; Opt-in cwd ancestor directory entries (no sibling file reads)")
+        for ancestor in cwd.resolve(strict=False).parents:
+            if ancestor != Path("/"):
+                lines.append(f"(allow file-read-data (literal {_quote(str(ancestor))}))")
 
     # ----------------------------------------------------------------
     # Dotfile / escaping-symlink mask — must come AFTER the allow

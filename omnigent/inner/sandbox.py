@@ -70,6 +70,8 @@ class SandboxPolicy:
         reads are unrestricted by the policy. The bwrap backend treats
         each entry as an extra ``--ro-bind-try`` mount on top of the
         hermetic root.
+    :param cwd_ancestor_directory_read: macOS-only opt-in for exact cwd
+        ancestor directory entry reads. It does not grant sibling file reads.
     :param write_roots: Directories the helper may write into, e.g.
         the cwd plus the per-helper scratch tmpdir.
     :param write_files: Per-file write grants for non-directory paths
@@ -168,6 +170,7 @@ class SandboxPolicy:
     write_roots: list[Path]
     write_files: list[Path]
     allow_network: bool
+    cwd_ancestor_directory_read: bool = False
     copy_on_write_roots: list[Path] | None = None
     copy_on_write_namespace: tuple[int, int, int] | None = None
     cwd_allow_hidden: list[str] | None = None
@@ -218,6 +221,7 @@ class SandboxPolicy:
             "write_roots": _json_string_list(self.write_roots),
             "write_files": _json_string_list(self.write_files),
             "allow_network": self.allow_network,
+            "cwd_ancestor_directory_read": self.cwd_ancestor_directory_read,
             "cwd_allow_hidden": (
                 _json_string_list(self.cwd_allow_hidden)
                 if self.cwd_allow_hidden is not None
@@ -329,6 +333,7 @@ class SandboxPolicy:
             write_roots=[Path(str(root)) for root in write_roots_data],
             write_files=[Path(str(path)) for path in write_files_data],
             allow_network=bool(data.get("allow_network", True)),
+            cwd_ancestor_directory_read=data.get("cwd_ancestor_directory_read") is True,
             cwd_allow_hidden=cwd_allow_hidden,
             cwd_hidden_scan_max_entries=max_entries,
             cwd_hidden_scan_overflow=overflow,
@@ -802,6 +807,7 @@ def _clone_policy_with(
         write_roots=write_roots,
         write_files=write_files,
         allow_network=policy.allow_network,
+        cwd_ancestor_directory_read=policy.cwd_ancestor_directory_read,
         cwd_allow_hidden=(
             list(policy.cwd_allow_hidden) if policy.cwd_allow_hidden is not None else None
         ),

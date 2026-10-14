@@ -4220,6 +4220,7 @@ async def test_codex_tui_grants_only_its_session_bridge(
     else:
         assert launched is not None
         assert launched.type == sandbox_type
+        assert launched.cwd_ancestor_directory_read is (sandbox_type == "darwin_seatbelt")
         expected_read = ["/existing/read"]
         expected = ["/existing/write"]
         if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
