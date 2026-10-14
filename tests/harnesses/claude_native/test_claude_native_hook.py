@@ -414,7 +414,7 @@ def test_clear_session_start_hook_rotates_before_printing_conversation_url(
             },
         ),
     ]
-    recorded = (bridge_dir / "hooks.jsonl").read_text(encoding="utf-8")
+    recorded = (bridge_dir / "hook-output" / "hooks.jsonl").read_text(encoding="utf-8")
     assert '"omnigent_clear_rotated_to":"conv_new"' in recorded
     # The /clear rotation gates Claude's welcome banner and must fail
     # fast — it uses _SESSION_ROTATION_TIMEOUT_S, NOT the day-long
@@ -606,7 +606,7 @@ def test_fork_session_start_hook_forks_before_printing_conversation_url(
         ),
         ("PATCH", "http://127.0.0.1:8787/v1/sessions/conv_old", {"runner_id": ""}),
     ]
-    recorded = (bridge_dir / "hooks.jsonl").read_text(encoding="utf-8")
+    recorded = (bridge_dir / "hook-output" / "hooks.jsonl").read_text(encoding="utf-8")
     assert '"omnigent_previous_claude_session_id":"claude_old"' in recorded
     assert '"omnigent_claude_session_was_seen":false' in recorded
     assert '"omnigent_fork_detected":true' in recorded
@@ -700,7 +700,7 @@ def test_resume_session_start_without_branch_marker_does_not_fork(
     assert json.loads(captured.out) == {
         "systemMessage": "Open this session in Omnigent: http://127.0.0.1:8787/c/conv_old"
     }
-    recorded = (bridge_dir / "hooks.jsonl").read_text(encoding="utf-8")
+    recorded = (bridge_dir / "hook-output" / "hooks.jsonl").read_text(encoding="utf-8")
     assert "omnigent_fork_detected" not in recorded
     assert "omnigent_fork_rotated_to" not in recorded
 
@@ -1138,7 +1138,8 @@ def test_build_hook_settings_captures_observer_stderr(tmp_path: Path) -> None:
         python_executable="/venv/bin/python",
     )
 
-    expected_redirection = f"2>> {shlex.quote(str(bridge_dir / OBSERVER_HOOK_STDERR_FILE))}"
+    stderr_path = bridge_dir / "hook-output" / OBSERVER_HOOK_STDERR_FILE
+    expected_redirection = f"2>> {shlex.quote(str(stderr_path))}"
     hooks = settings["hooks"]
     for event_name in ("SessionStart", "UserPromptSubmit", "Stop", "StopFailure"):
         command = hooks[event_name][0]["hooks"][0]["command"]
@@ -2716,7 +2717,7 @@ def test_route_turn_blocks_on_a_routed_verdict_without_touching_the_model(
         "turn_id": None,
         "model": "databricks-claude-opus-4-8",
     }
-    assert (bridge_dir / MARKER_FILE).exists()
+    assert (bridge_dir / "hook-output" / MARKER_FILE).exists()
     result = json.loads(captured.out)
     assert result["decision"] == "block"
     assert "databricks-claude-sonnet-5" in result["reason"]
@@ -2745,7 +2746,7 @@ def test_route_turn_marks_a_terminal_allow_so_it_stops_asking(
 
     assert _run_route_turn(bridge_dir, {"prompt": "hello"}, monkeypatch) == 0
     assert capsys.readouterr().out == ""
-    assert (bridge_dir / MARKER_FILE).exists()
+    assert (bridge_dir / "hook-output" / MARKER_FILE).exists()
 
 
 def test_route_turn_keeps_asking_after_a_non_terminal_allow(
@@ -2769,7 +2770,7 @@ def test_route_turn_keeps_asking_after_a_non_terminal_allow(
     )
 
     assert _run_route_turn(bridge_dir, {"prompt": "hello"}, monkeypatch) == 0
-    assert not (bridge_dir / MARKER_FILE).exists()
+    assert not (bridge_dir / "hook-output" / MARKER_FILE).exists()
 
 
 def test_route_turn_does_not_block_when_the_marker_cannot_be_written(
@@ -2878,7 +2879,7 @@ def test_route_turn_no_ops_when_the_endpoint_is_unreachable(
 
     assert _run_route_turn(bridge_dir, {"prompt": "hello"}, monkeypatch) == 0
     assert capsys.readouterr().out == ""
-    assert not (bridge_dir / MARKER_FILE).exists()
+    assert not (bridge_dir / "hook-output" / MARKER_FILE).exists()
 
 
 def test_route_turn_falls_open_on_the_ladders_own_request_budget(
@@ -2915,7 +2916,7 @@ def test_route_turn_falls_open_on_the_ladders_own_request_budget(
     assert HOOK_REQUEST_TIMEOUT_S <= 15.0
     # Nothing blocked and nothing marked, so the prompt ran.
     assert capsys.readouterr().out == ""
-    assert not (bridge_dir / MARKER_FILE).exists()
+    assert not (bridge_dir / "hook-output" / MARKER_FILE).exists()
 
 
 def test_build_hook_settings_registers_the_route_turn_hook(

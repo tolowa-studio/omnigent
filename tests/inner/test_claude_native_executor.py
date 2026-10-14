@@ -35,6 +35,22 @@ _TINY_PNG_DATA_URI = f"data:image/png;base64,{_TINY_PNG_B64}"
 _TINY_PNG_BYTES = base64.b64decode(_TINY_PNG_B64)
 
 
+def test_context_write_replaces_symlink_without_touching_target(tmp_path: Path) -> None:
+    """The trusted executor never follows a file planted by its child."""
+    output_dir = tmp_path / "hook-output"
+    output_dir.mkdir()
+    target = tmp_path / "bridge.json"
+    target.write_text("runner-owned")
+    context = output_dir / "pending_framework_context.txt"
+    context.symlink_to(target)
+
+    claude_native_executor._write_private_context(context, "notice")
+
+    assert target.read_text() == "runner-owned"
+    assert context.read_text() == "notice"
+    assert not context.is_symlink()
+
+
 @pytest.mark.asyncio
 async def test_run_turn_injects_user_message_without_streaming_transcript(
     monkeypatch: pytest.MonkeyPatch,

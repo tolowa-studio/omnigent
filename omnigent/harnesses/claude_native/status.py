@@ -14,6 +14,7 @@ import argparse
 import contextlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -89,17 +90,21 @@ def sync_raw_status_context(
     :returns: The new signature to carry forward (unchanged on a miss or
         an unparseable file, so the next poll retries).
     """
-    raw_path = bridge_dir / CONTEXT_RAW_FILE
+    output_dir = bridge_dir / "hook-output"
+    raw_path = (output_dir if output_dir.is_dir() else bridge_dir) / CONTEXT_RAW_FILE
     try:
-        stat = raw_path.stat()
+        info = raw_path.lstat()
     except OSError:
         return last_sig
-    sig = (stat.st_mtime_ns, stat.st_size)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1_048_576:
+        return last_sig
+    sig = (info.st_mtime_ns, info.st_size)
     if sig == last_sig:
         return last_sig
-    try:
-        payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    from omnigent.harnesses.claude_native.bridge import _read_json_file
+
+    payload = _read_json_file(raw_path)
+    if not payload:
         return last_sig
     if not isinstance(payload, dict):
         return sig
@@ -179,12 +184,14 @@ def _write_record_atomic(bridge_dir: Path, record: dict[str, object]) -> None:
     :param record: Normalized record from :func:`normalize_status_payload`.
     :raises OSError: When the temp-file write or replace fails.
     """
-    bridge_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".context-", dir=str(bridge_dir))
+    output_dir = bridge_dir / "hook-output"
+    if not output_dir.is_dir():
+        output_dir = bridge_dir
+    fd, tmp_path = tempfile.mkstemp(prefix=".context-", dir=str(output_dir))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(record, handle, separators=(",", ":"))
-        os.replace(tmp_path, str(bridge_dir / _CONTEXT_FILE))
+        os.replace(tmp_path, str(output_dir / _CONTEXT_FILE))
     except OSError:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)

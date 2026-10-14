@@ -2464,6 +2464,22 @@ def test_read_hook_events_from_offset_preserves_partial_trailing_line(tmp_path: 
     assert [record.event_name for record in second.records] == ["Stop"]
 
 
+def test_legacy_live_bridge_keeps_flat_hook_offsets(tmp_path: Path) -> None:
+    """A hot upgrade cannot switch a forwarder's existing byte cursor."""
+    bridge_dir = tmp_path / "legacy"
+    bridge_dir.mkdir()
+    record_hook_event(bridge_dir, {"hook_event_name": "SessionStart", "session_id": "one"})
+    first = read_hook_events_from_offset(bridge_dir, 0, start_event_count=0)
+    record_hook_event(bridge_dir, {"hook_event_name": "Stop", "session_id": "one"})
+    second = read_hook_events_from_offset(
+        bridge_dir, first.byte_offset, start_event_count=first.event_cursor
+    )
+
+    assert not (bridge_dir / "hook-output").exists()
+    assert (bridge_dir / "hooks.jsonl").is_file()
+    assert [record.event_name for record in second.records] == ["Stop"]
+
+
 def test_read_transcript_items_since_surfaces_skill_as_slash_command(
     tmp_path: Path,
 ) -> None:
@@ -12475,13 +12491,72 @@ def test_approval_wait_marker_tracks_a_parked_permission_hook(
     # The hook clears on exit, so clearing an absent marker must not raise.
     claude_native_bridge.clear_approval_wait_marker(marker)
 
-    # A hook subprocess derives the root from the bridge dir it was handed,
-    # which must land on the same path the runner-side reaper checks.
+    # A hook subprocess and the pane reaper derive the same per-bridge root.
     bridge_dir = tmp_path / "omnigent-test" / "approval-parent" / "abc123"
-    assert (
-        claude_native_bridge.approval_wait_marker_path("conv_wait", bridge_dir=bridge_dir)
-        == marker
+    (bridge_dir / "hook-output").mkdir(parents=True)
+    bridge_marker = claude_native_bridge.approval_wait_marker_path(
+        "conv_wait", bridge_dir=bridge_dir
     )
+    assert bridge_marker.parent == bridge_dir / "hook-output" / "approval-waits"
+    bridge_marker.parent.mkdir(parents=True)
+    claude_native_bridge.touch_approval_wait_marker(bridge_marker)
+    assert claude_native_bridge.approval_wait_is_fresh("conv_wait", bridge_dir=bridge_dir)
+    assert not claude_native_bridge.approval_wait_is_fresh("conv_other", bridge_dir=bridge_dir)
+
+
+def test_hook_output_survives_runner_owned_session_rotation(
+    tmp_path: Path,
+) -> None:
+    """A live pane's private grant remains valid after /clear or /fork."""
+    from omnigent.runner.turn_routing import (
+        MARKER_FILE,
+        TRACE_FILE,
+        trace_turn_routing,
+        turn_routing_marker_present,
+        write_turn_routing_marker,
+    )
+
+    bridge_dir = prepare_bridge_dir("conv_original", workspace=tmp_path)
+    config_path = bridge_dir / "bridge.json"
+    claude_native_bridge.write_active_session_id(bridge_dir, "conv_replacement")
+
+    assert json.loads(config_path.read_text())["active_session_id"] == "conv_replacement"
+    assert claude_native_bridge.read_active_session_id(bridge_dir) == "conv_replacement"
+    assert not (bridge_dir / "hook-output" / "active_session.json").exists()
+    assert write_turn_routing_marker(bridge_dir, session_id="conv_replacement")
+    assert turn_routing_marker_present(bridge_dir, "conv_replacement")
+    assert not turn_routing_marker_present(bridge_dir, "conv_original")
+    assert (bridge_dir / "hook-output" / MARKER_FILE).is_file()
+    trace_turn_routing(bridge_dir, "allow", "rotated")
+    assert (bridge_dir / "hook-output" / TRACE_FILE).is_file()
+
+
+def test_bridge_json_reader_rejects_symlink_and_non_object(tmp_path: Path) -> None:
+    """A hook-output symlink cannot make the runner read a private file."""
+    private = tmp_path / "private.json"
+    private.write_text('{"token":"private"}')
+    output_dir = tmp_path / "hook-output"
+    output_dir.mkdir()
+    linked = output_dir / "state.json"
+    linked.symlink_to(private)
+    assert claude_native_bridge._read_json_file(linked) == {}
+    linked.unlink()
+    linked.write_text("[]")
+    assert claude_native_bridge._read_json_file(linked) == {}
+
+
+def test_hook_journal_reader_rejects_symlink(tmp_path: Path) -> None:
+    """A hook cannot redirect the unrestricted forwarder to another file."""
+    bridge_dir = tmp_path / "bridge"
+    output_dir = bridge_dir / "hook-output"
+    output_dir.mkdir(parents=True)
+    private = tmp_path / "private.jsonl"
+    private.write_text('{"payload":{"hook_event_name":"Stop"}}\n')
+    (output_dir / "hooks.jsonl").symlink_to(private)
+
+    result = read_hook_events_from_offset(bridge_dir, 0, start_event_count=0)
+
+    assert result.records == []
 
 
 def test_hold_approval_wait_marker_refreshes_until_released(

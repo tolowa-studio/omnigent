@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import tempfile
 import threading
 from collections.abc import AsyncIterator, Callable
 from functools import partial
@@ -22,6 +23,7 @@ from omnigent.harnesses.claude_native.bridge import (
     ClaudeTerminalExited,
     TmuxSessionNotAdvertised,
     cancellable_injection,
+    hook_output_path,
     inject_slash_command,
     inject_user_message,
     is_auth_slash_command,
@@ -51,6 +53,24 @@ from omnigent.inner.native_attachments import (
 from omnigent.models.claude_model_vocabulary import claude_model_command_arg, normalized_model_id
 
 _logger = logging.getLogger(__name__)
+
+
+def _write_private_context(path: Path, text: str) -> None:
+    """Replace one-shot context without following a hook-planted symlink."""
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=".context-", delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 class ClaudeNativeExecutor(Executor):
@@ -130,10 +150,10 @@ class ClaudeNativeExecutor(Executor):
 
     async def _inject_prompt(self, text: str, notices: list[str]) -> None:
         """Inject user text with one-shot context while holding the injection lock."""
-        context_path = self._bridge_dir / CLAUDE_FRAMEWORK_CONTEXT_FILE
+        context_path = hook_output_path(self._bridge_dir, CLAUDE_FRAMEWORK_CONTEXT_FILE)
         context_path.unlink(missing_ok=True)
         if notices:
-            context_path.write_text("\n\n".join(notices), encoding="utf-8")
+            _write_private_context(context_path, "\n\n".join(notices))
         try:
             await self._inject(partial(inject_user_message, self._bridge_dir, content=text))
         except BaseException:
@@ -225,7 +245,9 @@ class ClaudeNativeExecutor(Executor):
         try:
             with telemetry.span("claude_native.inject"):
                 async with self._inject_lock:
-                    context_path = self._bridge_dir / CLAUDE_FRAMEWORK_CONTEXT_FILE
+                    context_path = hook_output_path(
+                        self._bridge_dir, CLAUDE_FRAMEWORK_CONTEXT_FILE
+                    )
                     context_path.unlink(missing_ok=True)
                     if wanted_model_arg is not None:
                         # Accepted trade-off: ``/model <id>`` also saves the

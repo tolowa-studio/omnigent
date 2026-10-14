@@ -19,6 +19,7 @@ from omnigent.harnesses.claude_native.bridge import (
     CLAUDE_FRAMEWORK_CONTEXT_FILE,
     approval_wait_marker_path,
     hold_approval_wait_marker,
+    hook_output_read_path,
     read_active_session_id,
     read_bridge_id,
     read_claude_session_id,
@@ -173,6 +174,20 @@ _EVALUATE_POLICY_TIMEOUT_S = 86400.0
 _FORK_COMMAND_NAMES = frozenset({"/branch", "/fork"})
 _FORK_TRANSCRIPT_WAIT_S = 1.0
 _FORK_TRANSCRIPT_POLL_S = 0.05
+
+
+def _runner_ipc_enabled(bridge_dir: Path) -> bool:
+    """New managed terminals use a runner-owned credential boundary."""
+    _ = bridge_dir
+    return os.environ.get("OMNIGENT_NATIVE_HOOK_IPC") == "1"
+
+
+def _runner_ipc_post(
+    bridge_dir: Path, path: str, payload: dict[str, object], *, timeout: float = 30.0
+) -> dict[str, object] | None:
+    from omnigent.runner.native_hook_ipc import post_native_hook_ipc
+
+    return post_native_hook_ipc(bridge_dir, path, payload, timeout=timeout)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -374,6 +389,12 @@ def _rotate_session_on_clear(bridge_dir: Path) -> str | None:
     :returns: New Omnigent session id, e.g. ``"conv_new"``, or ``None`` when
         rotation could not be completed from the hook.
     """
+    if _runner_ipc_enabled(bridge_dir):
+        result = _runner_ipc_post(
+            bridge_dir, "/rotate-session", {"kind": "clear"}, timeout=_SESSION_ROTATION_TIMEOUT_S
+        )
+        session_id = (result or {}).get("session_id")
+        return session_id if isinstance(session_id, str) and session_id else None
     old_session_id = read_active_session_id(bridge_dir)
     if not old_session_id:
         return None
@@ -432,6 +453,12 @@ def _rotate_session_on_fork(bridge_dir: Path) -> str | None:
     :returns: New Omnigent session id, e.g. ``"conv_fork"``, or ``None``
         when rotation could not be completed from the hook.
     """
+    if _runner_ipc_enabled(bridge_dir):
+        result = _runner_ipc_post(
+            bridge_dir, "/rotate-session", {"kind": "fork"}, timeout=_SESSION_ROTATION_TIMEOUT_S
+        )
+        session_id = (result or {}).get("session_id")
+        return session_id if isinstance(session_id, str) and session_id else None
     old_session_id = read_active_session_id(bridge_dir)
     if not old_session_id:
         return None
@@ -659,6 +686,11 @@ def _conversation_url_for_active_session(
         ``"http://127.0.0.1:8787/c/conv_new"``, or ``None`` when no
         URL can be constructed.
     """
+    if _runner_ipc_enabled(bridge_dir):
+        from omnigent.runner.native_hook_ipc import get_native_hook_ipc
+
+        url = (get_native_hook_ipc(bridge_dir) or {}).get("conversation_url")
+        return url if isinstance(url, str) and url else fallback_url
     config = read_permission_hook_config(bridge_dir)
     ap_server_url = config.get("ap_server_url")
     session_id = read_active_session_id(bridge_dir)
@@ -904,6 +936,17 @@ def _main_permission_request(argv: list[str]) -> int:
         print("omnigent claude permission hook: expected JSON object", file=sys.stderr)
         return 0
     bridge_dir = Path(args.bridge_dir)
+    if _runner_ipc_enabled(bridge_dir):
+        response = _runner_ipc_post(
+            bridge_dir,
+            "/permission-request",
+            {"hook": payload},
+            timeout=_PERMISSION_TIMEOUT_S,
+        )
+        output = (response or {}).get("output")
+        if isinstance(output, str):
+            sys.stdout.write(output)
+        return 0
     session_id = read_active_session_id(bridge_dir)
     if not session_id:
         print("omnigent claude permission hook: active session missing", file=sys.stderr)
@@ -1018,6 +1061,12 @@ def _main_evaluate_policy(argv: list[str]) -> int:
     bridge_dir = Path(args.bridge_dir)
     session_id = read_active_session_id(bridge_dir)
     if not session_id:
+        if _runner_ipc_enabled(bridge_dir):
+            from omnigent.native.native_policy_hook import fail_ask_hook_output
+
+            out = fail_ask_hook_output(payload.get("hook_event_name", ""))
+            if out is not None:
+                sys.stdout.write(json.dumps(out))
         return 0
 
     hook_event = payload.get("hook_event_name", "")
@@ -1037,6 +1086,21 @@ def _main_evaluate_policy(argv: list[str]) -> int:
         out = fail_ask_hook_output(hook_event, detail)
         if out is not None:
             sys.stdout.write(json.dumps(out))
+        return 0
+
+    if _runner_ipc_enabled(bridge_dir):
+        result = _runner_ipc_post(
+            bridge_dir,
+            "/policy-evaluate",
+            {"evaluation_request": eval_request},
+            timeout=_EVALUATE_POLICY_TIMEOUT_S,
+        )
+        eval_response = (result or {}).get("evaluation_response")
+        if not isinstance(eval_response, dict):
+            return _fail_closed()
+        hook_output = evaluation_response_to_hook_output(hook_event, eval_response)
+        if hook_output is not None:
+            sys.stdout.write(json.dumps(hook_output))
         return 0
 
     # Prefer the relay; fall back to direct server call when relay not yet up.
@@ -1112,7 +1176,7 @@ def _main_framework_context(argv: list[str]) -> int:
     """Add pending framework context to one submitted prompt."""
     args = _parse_evaluate_policy_args(argv)
     sys.stdin.read()
-    path = Path(args.bridge_dir) / CLAUDE_FRAMEWORK_CONTEXT_FILE
+    path = hook_output_read_path(Path(args.bridge_dir), CLAUDE_FRAMEWORK_CONTEXT_FILE)
     try:
         text = path.read_text(encoding="utf-8")
         path.unlink(missing_ok=True)
@@ -1241,6 +1305,33 @@ def _main_route_turn(argv: list[str]) -> int:
         return 0
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
+        return 0
+
+    if _runner_ipc_enabled(bridge_dir):
+        from omnigent.runner.turn_routing import HOOK_REQUEST_TIMEOUT_S
+
+        decision = _runner_ipc_post(
+            bridge_dir,
+            "/route-turn",
+            {
+                "harness": args.harness,
+                "prompt": prompt,
+                "model": read_claude_status_model(bridge_dir),
+            },
+            timeout=HOOK_REQUEST_TIMEOUT_S,
+        )
+        if isinstance(decision, dict) and decision.get("action") == "route":
+            model = decision.get("model")
+            if decision.get("block") is True and isinstance(model, str) and model:
+                reason = f"Smart Routing selected {model}; rerunning your message on it."
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "decision": "block",
+                            "reason": reason,
+                        }
+                    )
+                )
         return 0
 
     from omnigent.inner.hook_scripts.subagent_router import read_router_endpoint

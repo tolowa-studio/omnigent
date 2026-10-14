@@ -113,7 +113,7 @@ async def test_hook_telemetry_failure_does_not_block_status(
                 response_id="resp_synthetic",
             )
     assert state.event_cursor == 1
-    assert state.byte_offset == (bridge_dir / "hooks.jsonl").stat().st_size
+    assert state.byte_offset == (bridge_dir / "hook-output" / "hooks.jsonl").stat().st_size
     assert requests == [
         {
             "type": "external_session_status",

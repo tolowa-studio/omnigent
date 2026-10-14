@@ -987,8 +987,11 @@ async def test_auto_create_claude_terminal_passes_session_effort(
 
     # Fake Omnigent server client that returns a session with reasoning_effort.
     def _handle_request(_request: httpx.Request) -> httpx.Response:
-        if use_envelope:
+        if use_envelope and _request.method != "PATCH":
             raise AssertionError("envelope terminal startup made a legacy HTTP callback")
+        if use_envelope:
+            assert _request.url.path == "/v1/sessions/f89fd41f6eefee45b2117ac0fcbc73fa"
+            assert "omnigent.claude_native.bridge_id" in _request.read().decode()
         return httpx.Response(
             200,
             json={"reasoning_effort": "high", "labels": {}},
@@ -1431,9 +1434,9 @@ async def test_auto_create_claude_terminal_passes_raw_instructions(
     assert args[idx + 1] == "Be a concise, careful coding assistant."
 
 
-@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "none", None])
+@pytest.mark.parametrize("sandbox_type", ["darwin_seatbelt", "linux_bwrap", "none", None])
 @pytest.mark.asyncio
-async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_settings_file(
+async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     sandbox_type: str | None,
@@ -1441,9 +1444,8 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_set
     """
     Host-spawned Claude terminal honours the agent's ``os_env.sandbox``.
 
-    Confirms inherited sandbox policy stays intact, and that Seatbelt receives
-    only the generated Claude settings file as an additional read path. ``none``
-    and an unset sandbox retain their prior behavior.
+    Confirms an active sandbox can read its runner-owned config but can write
+    only its own hook output. ``none`` and an unset sandbox stay unchanged.
 
     :param tmp_path: Pytest-provided temporary directory.
     :param monkeypatch: Pytest monkeypatch fixture.
@@ -1453,6 +1455,9 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_set
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
+    monkeypatch.setenv("OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN", "test-runner-token")
 
     monkeypatch.setattr(
         "omnigent.harnesses.claude_native.forwarder.supervise_forwarder",
@@ -1529,26 +1534,59 @@ async def test_auto_create_claude_terminal_inherits_agent_sandbox_and_grants_set
     )
 
     launched_sandbox = captured["spec"].os_env.sandbox
+    assert captured["spec"].inherit_env is (sandbox_type == "none")
+    assert "OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN" in captured["spec"].env_unset
+    if sandbox_type == "none":
+        assert "ANTHROPIC_API_KEY" not in captured["spec"].env_unset
+        assert "HTTPS_PROXY" not in captured["spec"].env_unset
     if sandbox_type is None:
         assert launched_sandbox is None
     else:
         assert launched_sandbox is not None
         assert launched_sandbox.type == sandbox_type
-        assert launched_sandbox.write_paths == ["/existing/write"]
-        if sandbox_type == "darwin_seatbelt":
-            settings_path = str(
-                claude_native_bridge.bridge_dir_for_bridge_id("e27fc87ef2a8d798895ce8c1e66db82d")
-                / "claude-settings.json"
+        if sandbox_type in {"darwin_seatbelt", "linux_bwrap"}:
+            bridge_dir = claude_native_bridge.bridge_dir_for_bridge_id(
+                "e27fc87ef2a8d798895ce8c1e66db82d"
             )
-            assert launched_sandbox.read_paths == ["/existing/read", settings_path]
+            output_dir = bridge_dir / claude_native_bridge.HOOK_OUTPUT_DIR
+            marker_root = claude_native_bridge.approval_wait_marker_root(
+                "e27fc87ef2a8d798895ce8c1e66db82d", bridge_dir=bridge_dir
+            )
+            assert launched_sandbox.read_paths is not None
+            assert launched_sandbox.read_paths[:3] == [
+                "/existing/read",
+                str(bridge_dir / "claude-settings.json"),
+                str(output_dir),
+            ]
+            assert str(bridge_dir / "hook-ipc") in launched_sandbox.read_paths
+            assert str(bridge_dir) not in launched_sandbox.read_paths
+            mcp_socket_dir = captured["spec"].env["OMNIGENT_CLAUDE_MCP_SOCKET_DIR"]
+            assert launched_sandbox.write_paths == [
+                "/existing/write",
+                str(output_dir),
+                mcp_socket_dir,
+            ]
+            assert mcp_socket_dir in launched_sandbox.read_paths
+            settings_path = str(bridge_dir / "claude-settings.json")
             assert settings_path in captured["spec"].args
-            assert settings_path not in launched_sandbox.write_paths
-            assert str(Path(settings_path).parent) not in launched_sandbox.read_paths
+            assert captured["spec"].env["TMPDIR"] == str(output_dir / "tmp")
+            assert captured["spec"].inherit_env is False
+            assert "ANTHROPIC_API_KEY" not in captured["spec"].env
+            assert "OMNIGENT_REMOTE_AUTH_TOKEN" not in captured["spec"].env
+            assert marker_root.is_dir()
+            assert str(bridge_dir) not in launched_sandbox.write_paths
+            peer_dir = claude_native_bridge.bridge_dir_for_bridge_id("peer")
+            assert str(peer_dir) not in launched_sandbox.read_paths
+            assert str(peer_dir / claude_native_bridge.HOOK_OUTPUT_DIR) not in (
+                launched_sandbox.write_paths or []
+            )
         else:
             assert launched_sandbox.read_paths == ["/existing/read"]
+            assert launched_sandbox.write_paths == ["/existing/write"]
         # The launch gets a copied sandbox; the agent's original policy is intact.
         assert agent_sandbox is not None
         assert agent_sandbox.read_paths == ["/existing/read"]
+        assert agent_sandbox.write_paths == ["/existing/write"]
     # The whole os_env is threaded through as the inheritance parent.
     assert captured["parent_os_env"] is agent_os_env
 
@@ -4136,6 +4174,7 @@ async def test_auto_create_claude_terminal_registers_permission_hook(
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config-home"))
 
     token_calls: list[int] = []
 
@@ -4219,13 +4258,12 @@ async def test_auto_create_claude_terminal_registers_permission_hook(
     assert permission_hook["type"] == "command"
     assert "claude_native.hook permission-request" in permission_hook["command"]
 
-    # The hook reads the server URL back out of this file at hook time,
-    # so it must be written with the runner's Omnigent server URL.
+    # The sandboxed hook reaches the runner IPC, never a bearer file.
     config = read_permission_hook_config(
         bridge_dir_for_bridge_id("4e92b5a0c0ee6db3f874f9c4a3f855a5")
     )
-    assert config["ap_server_url"] == "http://127.0.0.1:8000"
-    assert config["ap_auth_headers"]["Authorization"] == "Bearer shared-runner-token"
+    assert config == {}
+    assert spec.env["OMNIGENT_NATIVE_HOOK_IPC"] == "1"
     assert token_calls == [1]
 
     # The forwarder must get a refresh-capable httpx.Auth (not just a

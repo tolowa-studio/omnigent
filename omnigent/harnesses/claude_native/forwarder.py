@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -29,7 +30,9 @@ from omnigent.harnesses.claude_native.bridge import (
     ClaudeTranscriptItem,
     HookReadResult,
     TranscriptReadResult,
+    _read_json_file,
     compute_transcript_cumulative_cost,
+    hook_output_read_path,
     read_active_session_id,
     read_bridge_id,
     read_claude_context_state,
@@ -42,9 +45,11 @@ from omnigent.harnesses.claude_native.bridge import (
     read_transcript_items_from_offset,
     read_transcript_items_since_with_position,
     read_transcript_path,
+    rotation_receipt_path,
     transcript_has_forked_from_marker,
     transcript_has_recent_local_command,
     url_component,
+    validated_claude_transcript_path,
     write_active_session_id,
 )
 from omnigent.harnesses.claude_native.diagnostics import ClaudeDebugLogFollower
@@ -221,17 +226,15 @@ class _TranscriptDiscoveryDiagnostics:
 def _diagnostic_file_size(path: Path) -> int | None:
     """Return a diagnostic file's size, or ``None`` when it is unavailable."""
     try:
-        return path.stat().st_size
+        info = path.lstat()
+        return info.st_size if stat.S_ISREG(info.st_mode) and info.st_nlink == 1 else None
     except OSError:
         return None
 
 
 def _last_observer_hook_name(bridge_dir: Path) -> str | None:
     """Return the last recorded observer hook name for diagnostics."""
-    try:
-        state = json.loads((bridge_dir / "state.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    state = _read_json_file(hook_output_read_path(bridge_dir, "state.json"))
     value = state.get("last_hook_event_name") if isinstance(state, dict) else None
     return value if isinstance(value, str) and value else None
 
@@ -263,8 +266,10 @@ def _observe_transcript_discovery(
     elif diagnostics.warning_logged or elapsed_s < _TRANSCRIPT_DISCOVERY_WARNING_S:
         return
 
-    hooks_size = _diagnostic_file_size(bridge_dir / _HOOKS_FILE)
-    stderr_size = _diagnostic_file_size(bridge_dir / OBSERVER_HOOK_STDERR_FILE)
+    hooks_size = _diagnostic_file_size(hook_output_read_path(bridge_dir, _HOOKS_FILE))
+    stderr_size = _diagnostic_file_size(
+        hook_output_read_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)
+    )
     settings_present = (bridge_dir / _INVOCATION_SETTINGS_FILE).is_file()
     args = (
         max(0.0, elapsed_s),
@@ -309,17 +314,21 @@ def _log_new_observer_hook_stderr(
     byte_offset: int,
 ) -> int:
     """Relay newly captured observer-hook stderr into session-scoped runner logs."""
-    path = bridge_dir / OBSERVER_HOOK_STDERR_FILE
+    path = hook_output_read_path(bridge_dir, OBSERVER_HOOK_STDERR_FILE)
     try:
-        size = path.stat().st_size
-        if size < byte_offset:
-            byte_offset = 0
-        if size == byte_offset:
-            return byte_offset
-        with path.open("rb") as handle:
-            handle.seek(byte_offset)
-            raw = handle.read(_OBSERVER_HOOK_STDERR_READ_BYTES)
-            new_offset = handle.tell()
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                return byte_offset
+            if info.st_size < byte_offset:
+                byte_offset = 0
+            if info.st_size == byte_offset:
+                return byte_offset
+            raw = os.pread(fd, _OBSERVER_HOOK_STDERR_READ_BYTES, byte_offset)
+            new_offset = byte_offset + len(raw)
+        finally:
+            os.close(fd)
     except OSError:
         return byte_offset
 
@@ -1305,6 +1314,7 @@ async def forward_claude_transcript_to_session(
                         session_id=current_session_id,
                         bridge_dir=bridge_dir,
                         state=hook_state,
+                        previous_session_id=session_id,
                     )
                     if rotation is not None:
                         await _cancel_subagent_forward_task(subagent_task)
@@ -1362,6 +1372,7 @@ async def forward_claude_transcript_to_session(
                         session_id=current_session_id,
                         bridge_dir=bridge_dir,
                         state=hook_state,
+                        previous_session_id=session_id,
                     )
                     if rotation is not None:
                         await _cancel_subagent_forward_task(subagent_task)
@@ -3152,12 +3163,54 @@ async def supervise_forwarder(
         backoff_s = min(backoff_s * 2.0, _SUPERVISOR_MAX_BACKOFF_S)
 
 
+def _managed_rotation_target(
+    bridge_dir: Path,
+    *,
+    kind: str,
+    previous_session_id: str | None,
+    journal_target: str | None,
+) -> str | None:
+    """Accept a journal rotation only when a trusted IPC receipt matches it."""
+    if not previous_session_id or not journal_target:
+        return None
+    receipt = _read_json_file(rotation_receipt_path(bridge_dir, previous_session_id))
+    if not receipt:
+        receipt = _read_json_file(bridge_dir / "rotation.json")
+    if (
+        receipt.get("kind") != kind
+        or receipt.get("old_session_id") != previous_session_id
+        or receipt.get("new_session_id") != journal_target
+    ):
+        return None
+    active = read_active_session_id(bridge_dir)
+    current = journal_target
+    seen = {previous_session_id}
+    # A second /clear or /fork may finish before this forwarder drains the
+    # first hook. Follow runner-owned receipts to the current active session,
+    # bounded by the IPC rotation limit, rather than losing the first edge.
+    for _ in range(13):
+        if current == active:
+            return journal_target
+        if current in seen:
+            return None
+        seen.add(current)
+        successor = _read_json_file(rotation_receipt_path(bridge_dir, current))
+        if successor.get("old_session_id") != current:
+            return None
+        next_id = successor.get("new_session_id")
+        if not isinstance(next_id, str) or not next_id:
+            return None
+        current = next_id
+    return None
+
+
 async def _maybe_rotate_session_on_clear(
     *,
     client: httpx.AsyncClient,
     session_id: str,
     bridge_dir: Path,
     state: HookForwardState,
+    previous_session_id: str | None = None,
 ) -> str | None:
     """
     Rotate the active Omnigent session when Claude reports ``/clear``.
@@ -3194,13 +3247,24 @@ async def _maybe_rotate_session_on_clear(
         event_cursor=clear_record.event_cursor,
         byte_offset=clear_record.byte_offset,
         cursor_fingerprint=_jsonl_cursor_fingerprint(
-            bridge_dir / _HOOKS_FILE,
+            hook_output_read_path(bridge_dir, _HOOKS_FILE),
             clear_record.byte_offset,
         ),
     )
     new_session_id: str | None = None
     try:
-        if clear_record.clear_rotated_to:
+        if (bridge_dir / "hook-ipc" / "managed.json").is_file():
+            # Hook records are sandbox-writable. Managed rotations already
+            # completed through runner IPC, so the trusted bridge identity is
+            # the only admissible rotated-to value. Never create a session
+            # from a forged journal entry.
+            new_session_id = _managed_rotation_target(
+                bridge_dir,
+                kind="clear",
+                previous_session_id=previous_session_id,
+                journal_target=clear_record.clear_rotated_to,
+            )
+        elif clear_record.clear_rotated_to:
             new_session_id = clear_record.clear_rotated_to
         else:
             new_session_id = await _create_clear_replacement_session(
@@ -3218,7 +3282,8 @@ async def _maybe_rotate_session_on_clear(
             extra={"session_id": session_id},
         )
     await _write_hook_state_async(bridge_dir, durable)
-    reset_transcript_forward_state(bridge_dir, reset_hooks=False)
+    if new_session_id is not None:
+        reset_transcript_forward_state(bridge_dir, reset_hooks=False)
     return new_session_id
 
 
@@ -3354,6 +3419,7 @@ async def _maybe_rotate_session_on_fork(
     session_id: str,
     bridge_dir: Path,
     state: HookForwardState,
+    previous_session_id: str | None = None,
 ) -> str | None:
     """
     Fork the active Omnigent session when Claude reports ``/fork``/``/branch``.
@@ -3373,7 +3439,15 @@ async def _maybe_rotate_session_on_fork(
         avoid a re-rotation loop).
     """
     result = await asyncio.to_thread(_read_hook_events_for_state, bridge_dir, state)
-    fork_record = next((record for record in result.records if _is_fork_hook_record(record)), None)
+    managed = (bridge_dir / "hook-ipc" / "managed.json").is_file()
+    fork_record = next(
+        (
+            record
+            for record in result.records
+            if (bool(record.fork_rotated_to) if managed else _is_fork_hook_record(record))
+        ),
+        None,
+    )
     if fork_record is None:
         return None
 
@@ -3386,13 +3460,20 @@ async def _maybe_rotate_session_on_fork(
         event_cursor=fork_record.event_cursor,
         byte_offset=fork_record.byte_offset,
         cursor_fingerprint=_jsonl_cursor_fingerprint(
-            bridge_dir / _HOOKS_FILE,
+            hook_output_read_path(bridge_dir, _HOOKS_FILE),
             fork_record.byte_offset,
         ),
     )
     new_session_id: str | None = None
     try:
-        if fork_record.fork_rotated_to:
+        if (bridge_dir / "hook-ipc" / "managed.json").is_file():
+            new_session_id = _managed_rotation_target(
+                bridge_dir,
+                kind="fork",
+                previous_session_id=previous_session_id,
+                journal_target=fork_record.fork_rotated_to,
+            )
+        elif fork_record.fork_rotated_to:
             new_session_id = fork_record.fork_rotated_to
         else:
             new_session_id = await _create_fork_replacement_session(
@@ -3410,10 +3491,21 @@ async def _maybe_rotate_session_on_fork(
             extra={"session_id": session_id},
         )
     await _write_hook_state_async(bridge_dir, durable)
-    await _seed_fork_transcript_forward_state(
-        bridge_dir=bridge_dir,
-        transcript_path=fork_record.transcript_path,
-    )
+    if new_session_id is not None and (
+        not managed
+        or (
+            fork_record.transcript_path is not None
+            and isinstance(fork_record.claude_session_id, str)
+            and validated_claude_transcript_path(
+                fork_record.transcript_path, fork_record.claude_session_id
+            )
+            is not None
+        )
+    ):
+        await _seed_fork_transcript_forward_state(
+            bridge_dir=bridge_dir,
+            transcript_path=fork_record.transcript_path,
+        )
     return new_session_id
 
 
@@ -3792,7 +3884,9 @@ async def _ensure_hook_state(
     state = HookForwardState(
         event_cursor=0,
         byte_offset=byte_offset,
-        cursor_fingerprint=_jsonl_cursor_fingerprint(bridge_dir / _HOOKS_FILE, byte_offset),
+        cursor_fingerprint=_jsonl_cursor_fingerprint(
+            hook_output_read_path(bridge_dir, _HOOKS_FILE), byte_offset
+        ),
     )
     await _write_hook_state_async(bridge_dir, state)
     return state
@@ -3900,7 +3994,7 @@ async def _forward_available_status_events(
             event_cursor=result.event_cursor,
             byte_offset=result.byte_offset,
             cursor_fingerprint=_jsonl_cursor_fingerprint(
-                bridge_dir / _HOOKS_FILE, result.byte_offset
+                hook_output_read_path(bridge_dir, _HOOKS_FILE), result.byte_offset
             ),
         )
         await _write_hook_state_async(bridge_dir, durable)
@@ -3912,7 +4006,7 @@ async def _forward_available_status_events(
             event_cursor=record.event_cursor,
             byte_offset=record.byte_offset,
             cursor_fingerprint=_jsonl_cursor_fingerprint(
-                bridge_dir / _HOOKS_FILE, record.byte_offset
+                hook_output_read_path(bridge_dir, _HOOKS_FILE), record.byte_offset
             ),
         )
         # Subagent lifecycle hooks land in the same hooks.jsonl as parent
@@ -4285,7 +4379,9 @@ async def _forward_available_status_events(
     durable = HookForwardState(
         event_cursor=result.event_cursor,
         byte_offset=result.byte_offset,
-        cursor_fingerprint=_jsonl_cursor_fingerprint(bridge_dir / _HOOKS_FILE, result.byte_offset),
+        cursor_fingerprint=_jsonl_cursor_fingerprint(
+            hook_output_read_path(bridge_dir, _HOOKS_FILE), result.byte_offset
+        ),
     )
     await _write_hook_state_async(bridge_dir, durable)
     return durable
@@ -5054,7 +5150,7 @@ def _validated_hook_state(
     """
     if state.byte_offset is None:
         return state
-    hooks_path = bridge_dir / _HOOKS_FILE
+    hooks_path = hook_output_read_path(bridge_dir, _HOOKS_FILE)
     current_fingerprint = _jsonl_cursor_fingerprint(hooks_path, state.byte_offset)
     if current_fingerprint is None:
         _logger.warning(
@@ -5472,7 +5568,7 @@ async def _forward_available_deltas(
     # idle / non-streaming polls don't churn the thread pool (this loop
     # polls every ~0.25s). A bare ``exists()`` is a cheap stat consistent
     # with the other sync reads this loop already does each poll.
-    if not (bridge_dir / MESSAGE_DELTAS_FILE).exists():
+    if not hook_output_read_path(bridge_dir, MESSAGE_DELTAS_FILE).exists():
         return state
     result = await asyncio.to_thread(
         read_message_deltas_from_offset, bridge_dir, state.byte_offset
@@ -7191,7 +7287,7 @@ def _hook_end_offset(bridge_dir: Path) -> int:
     :returns: Offset after the last newline-terminated hook record, or
         ``0`` when no complete hook record exists yet.
     """
-    return _complete_jsonl_end_offset(bridge_dir / _HOOKS_FILE)
+    return _complete_jsonl_end_offset(hook_output_read_path(bridge_dir, _HOOKS_FILE))
 
 
 def _complete_jsonl_end_offset(path: Path) -> int:
