@@ -1448,8 +1448,25 @@ describe("useAvailableAgents user agents (scope=user)", () => {
     });
   });
 
-  it("does not ask for the caller's agents when the server lacks agent_install", async () => {
-    routeFetch({ [BUILTINS_URL]: CATALOG, [MINE_URL]: MINE });
+  it("lists registered user agents without requiring a recent session or capability flag", async () => {
+    routeFetch({
+      [BUILTINS_URL]: CATALOG,
+      [MINE_URL]: sessionResponse({ object: "list", data: [], has_more: false }),
+      [USER_AGENTS_URL]: mockResponse({
+        data: [
+          {
+            id: "4c25-factory-orchestrator",
+            name: "tolowa-factory-orchestrator",
+            description: "Factory orchestration agent",
+            harness: "codex-native",
+            builtin: false,
+            created_at: 10,
+            updated_at: 10,
+          },
+        ],
+        has_more: false,
+      }),
+    });
 
     const { result } = renderHook(() => ({ ...useAvailableAgents() }), {
       wrapper: wrapperWithInfo(false),
@@ -1459,15 +1476,23 @@ describe("useAvailableAgents user agents (scope=user)", () => {
       expect(result.current.isPlaceholderData).toBe(false);
     });
 
-    expect(result.current.data?.map((a) => a.id)).toEqual(["ag_polly", "ag_orion"]);
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("scope=user"))).toBe(false);
+    expect(result.current.data?.map((a) => a.id)).toEqual([
+      "ag_polly",
+      "4c25-factory-orchestrator",
+    ]);
+    expect(result.current.data?.[1]).toMatchObject({
+      name: "tolowa-factory-orchestrator",
+      display_name: "Tolowa-factory-orchestrator",
+      mine: true,
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toContain(USER_AGENTS_URL);
   });
 
-  it("keeps the existing list when the caller's agents fail to load", async () => {
+  it("keeps the existing list when an older server does not support caller agents", async () => {
     routeFetch({
       [BUILTINS_URL]: CATALOG,
       [MINE_URL]: MINE,
-      [USER_AGENTS_URL]: mockResponse({}, { ok: false, status: 500 }),
+      [USER_AGENTS_URL]: mockResponse({}, { ok: false, status: 404 }),
     });
 
     const { result } = renderHook(() => ({ ...useAvailableAgents() }), {
