@@ -7463,9 +7463,9 @@ def _claude_terminal_env_unset(
     """
     Env vars to strip from a native Claude terminal child.
 
-    Always drops ``DATABRICKS_CONFIG_PROFILE`` so the terminal's MCP
-    servers don't inherit the runner's ambient Databricks profile and
-    resolve auth against the wrong workspace.
+    Always drops runner control auth variables. It also drops
+    ``DATABRICKS_CONFIG_PROFILE`` so MCP servers do not inherit the runner's
+    ambient Databricks profile and resolve auth against the wrong workspace.
 
     Always drops ``CLAUDECODE`` because Claude Code rejects any child launch
     carrying that nested-session marker, regardless of its auth mode. When the
@@ -7476,10 +7476,16 @@ def _claude_terminal_env_unset(
 
     :param claude_config: The resolved native launch config, or ``None``
         (Claude's own login) — which still strips the nested-session marker.
-    :returns: The env var names to unset, e.g.
-        ``["DATABRICKS_CONFIG_PROFILE", "CLAUDECODE", "ANTHROPIC_API_KEY"]``.
+    :returns: The env var names to unset, including runner control auth.
     """
-    env_unset = ["DATABRICKS_CONFIG_PROFILE", "CLAUDECODE"]
+    from omnigent.runner.identity import RUNNER_AUTH_SECRET_ENV_VARS
+
+    env_unset = [
+        "DATABRICKS_CONFIG_PROFILE",
+        "CLAUDECODE",
+        "OMNIGENT_REMOTE_AUTH_TOKEN",
+        *sorted(RUNNER_AUTH_SECRET_ENV_VARS),
+    ]
     if claude_config is not None and claude_config.api_key_helper:
         env_unset.append("ANTHROPIC_API_KEY")
     return env_unset
@@ -8908,6 +8914,10 @@ async def _auto_create_claude_terminal(
     claude_terminal_env_unset = _claude_terminal_env_unset(claude_config)
 
     terminal_sandbox = agent_os_env.sandbox if agent_os_env is not None else None
+    # An explicit `none` sandbox keeps the user's provider/proxy environment.
+    # An unset sandbox resolves to the platform default later, so fail closed
+    # on inheritance until that resolved type is known.
+    inherit_claude_env = terminal_sandbox is not None and terminal_sandbox.type == "none"
     if terminal_sandbox is not None and terminal_sandbox.type in {
         "darwin_seatbelt",
         "linux_bwrap",
@@ -8982,7 +8992,7 @@ async def _auto_create_claude_terminal(
         # ``ANTHROPIC_BASE_URL`` / ``apiKeyHelper``), so this affects only MCPs;
         # ones needing a specific profile must set it in their own per-MCP env.
         env_unset=claude_terminal_env_unset,
-        inherit_env=False,
+        inherit_env=inherit_claude_env,
         scrollback=50000,
         # Keep the private tmux server alive if the `claude` CLI exits (e.g. a
         # sub-agent worker whose CLI exits right after rendering its prompt on

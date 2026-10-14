@@ -29,6 +29,7 @@ from omnigent.harnesses.claude_native.bridge import (
     approval_wait_marker_path,
     hold_approval_wait_marker,
     read_active_session_id,
+    rotation_receipt_path,
     write_active_session_id,
 )
 from omnigent.runner.native_hook_ipc import NativeHookIPC, start_native_hook_ipc
@@ -195,9 +196,15 @@ def start_claude_native_ipc(
         new_id = created.get("id") if isinstance(created, dict) else None
         if not isinstance(new_id, str) or not new_id:
             raise ValueError("rotation returned no session id")
+        bind_body: dict[str, Any] = {"runner_id": expected_runner_id}
+        if kind == "fork":
+            inherited_labels = created.get("labels")
+            if not isinstance(inherited_labels, dict):
+                raise ValueError("fork response has no labels")
+            bind_body["labels"] = {**inherited_labels, BRIDGE_ID_LABEL_KEY: bridge_id}
         bind = await server_client.patch(
             f"/v1/sessions/{quote(new_id, safe='')}",
-            json={"runner_id": expected_runner_id},
+            json=bind_body,
         )
         bind.raise_for_status()
         from omnigent.entities.session_resources import terminal_resource_id
@@ -209,10 +216,9 @@ def start_claude_native_ipc(
             json={"target_session_id": new_id},
         )
         transfer.raise_for_status()
-        _write_json_file(
-            bridge_dir / "rotation.json",
-            {"kind": kind, "old_session_id": old_id, "new_session_id": new_id},
-        )
+        receipt = {"kind": kind, "old_session_id": old_id, "new_session_id": new_id}
+        _write_json_file(rotation_receipt_path(bridge_dir, old_id), receipt)
+        _write_json_file(bridge_dir / "rotation.json", receipt)
         write_active_session_id(bridge_dir, new_id)
         if routing_enabled:
             from omnigent.runner.turn_routing import (

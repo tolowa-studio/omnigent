@@ -164,6 +164,47 @@ def test_claude_ipc_keeps_local_mcp_tools_without_exposing_bridge_credentials(
     ) == {"content": [{"type": "text", "text": "local result"}]}
 
 
+def test_native_hook_ipc_rejects_invalid_calls_without_leaking_handler_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from omnigent.runner.native_hook_ipc import start_native_hook_ipc
+
+    socket_root = Path(tempfile.mkdtemp(prefix="nhi-", dir="/tmp"))
+    monkeypatch.setenv("OMNIGENT_NATIVE_IPC_ROOT", str(socket_root))
+    bridge_dir = tmp_path / "bridge"
+    bridge_dir.mkdir()
+
+    def fail(_session_id: str, _payload: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("private backend detail")
+
+    ipc = start_native_hook_ipc(
+        bridge_dir=bridge_dir,
+        bridge_id="bridge-a",
+        session_id="session-a",
+        handlers={"/tool-call": fail},
+    )
+    try:
+        advert = json.loads((bridge_dir / "hook-ipc" / "runner-ipc.json").read_text())
+        auth = {"Authorization": f"Bearer {advert['ipc_capability']}"}
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(ipc.socket_path))) as client:
+            assert client.post("http://omnigent/tool-call", json={}, headers={}).status_code == 401
+            assert client.post("http://omnigent/unknown", json={}, headers=auth).status_code == 404
+            with socket.socket(socket.AF_UNIX) as raw:
+                raw.connect(str(ipc.socket_path))
+                raw.sendall(
+                    b"POST /tool-call HTTP/1.1\r\nHost: omnigent\r\n"
+                    + f"Authorization: {auth['Authorization']}\r\n".encode()
+                    + b"Content-Length: 1048577\r\n\r\n"
+                )
+                assert b"400" in raw.recv(256).split(b"\r\n", 1)[0]
+            failed = client.post("http://omnigent/tool-call", json={}, headers=auth)
+            assert failed.status_code == 503
+            assert "private backend detail" not in failed.text
+    finally:
+        ipc.close()
+        shutil.rmtree(socket_root)
+
+
 @pytest.mark.asyncio
 async def test_claude_ipc_binds_backend_calls_to_ap_owned_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -262,6 +303,9 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
     )
     calls: list[tuple[str, str, dict[str, object] | None]] = []
     route_calls: list[str] = []
+    session_b_labels = (
+        {"team": "alpha"} if kind == "fork" else {claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a"}
+    )
     from omnigent.harnesses.claude_native import hook as claude_hook
     from omnigent.runner import turn_routing
 
@@ -278,6 +322,7 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
     monkeypatch.setattr(claude_hook, "_route_turn_post", route_post)
 
     def respond(req: httpx.Request) -> httpx.Response:
+        nonlocal session_b_labels
         body = json.loads(req.content) if req.content else None
         calls.append((req.method, req.url.path, body))
         if req.method == "GET" and req.url.path == "/v1/sessions/session-a":
@@ -298,16 +343,26 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
                     "id": "session-b",
                     "agent_id": "agent-a",
                     "runner_id": "runner-a",
-                    "labels": {claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a"},
+                    "labels": session_b_labels,
                 },
             )
         if req.method == "POST" and req.url.path in {
             "/v1/sessions",
             "/v1/sessions/session-a/fork",
         }:
-            return httpx.Response(201, json={"id": "session-b"})
+            return httpx.Response(201, json={"id": "session-b", "labels": session_b_labels})
         if req.method == "PATCH" and req.url.path == "/v1/sessions/session-b":
-            assert body == {"runner_id": "runner-a"}
+            if kind == "fork":
+                assert body == {
+                    "runner_id": "runner-a",
+                    "labels": {
+                        "team": "alpha",
+                        claude_bridge.BRIDGE_ID_LABEL_KEY: "bridge-a",
+                    },
+                }
+                session_b_labels = body["labels"]
+            else:
+                assert body == {"runner_id": "runner-a"}
             assert read_active_session_id(bridge_dir) == "session-a"
             return httpx.Response(200, json={"id": "session-b"})
         if req.method == "POST" and req.url.path.endswith("/transfer"):
@@ -337,6 +392,9 @@ async def test_claude_ipc_rotation_transfers_before_switching_active_session(
             )
             assert result == {"session_id": "session-b"}
             assert read_active_session_id(bridge_dir) == "session-b"
+            assert json.loads(
+                claude_bridge.rotation_receipt_path(bridge_dir, "session-a").read_text()
+            ) == {"kind": kind, "old_session_id": "session-a", "new_session_id": "session-b"}
             routed = await asyncio.to_thread(
                 post_native_hook_ipc, bridge_dir, "/route-turn", {"prompt": "new task"}
             )
@@ -532,7 +590,21 @@ def test_forged_hook_rotation_requires_runner_owned_receipt(
         bridge_dir / "rotation.json",
         {"kind": "clear", "old_session_id": "session-b", "new_session_id": "session-c"},
     )
+    _write_json_file(
+        claude_bridge.rotation_receipt_path(bridge_dir, "session-a"),
+        {"kind": "clear", "old_session_id": "session-a", "new_session_id": "session-b"},
+    )
+    _write_json_file(
+        claude_bridge.rotation_receipt_path(bridge_dir, "session-b"),
+        {"kind": "clear", "old_session_id": "session-b", "new_session_id": "session-c"},
+    )
     _write_json_file(bridge_dir / "bridge.json", {"active_session_id": "session-c"})
+    assert (
+        _managed_rotation_target(
+            bridge_dir, kind="clear", previous_session_id="session-a", journal_target="session-b"
+        )
+        == "session-b"
+    )
     assert (
         _managed_rotation_target(
             bridge_dir, kind="clear", previous_session_id="session-b", journal_target="session-c"
@@ -555,6 +627,25 @@ def test_approval_marker_refreshes_and_creates_narrow_root(
     claude_bridge.touch_approval_wait_marker(marker)
     assert marker.stat().st_mtime_ns > 1_000_000_000
     assert claude_bridge.approval_wait_is_fresh("session-a")
+
+
+def test_overlapping_runner_approval_waits_keep_distinct_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(claude_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_bridge, "_BRIDGE_ROOT", tmp_path / "root")
+    bridge_dir = tmp_path / "root" / "bridge"
+    (bridge_dir / "hook-ipc").mkdir(parents=True)
+    (bridge_dir / "hook-ipc" / "managed.json").write_text('{"version":1}')
+    first = claude_bridge.approval_wait_marker_path("session-a", bridge_dir=bridge_dir)
+    second = claude_bridge.approval_wait_marker_path("session-a", bridge_dir=bridge_dir)
+    assert first != second
+    with claude_bridge.hold_approval_wait_marker(first):
+        with claude_bridge.hold_approval_wait_marker(second):
+            assert first.is_file() and second.is_file()
+        assert first.is_file() and not second.exists()
+        assert claude_bridge.approval_wait_is_fresh("session-a", bridge_dir=bridge_dir)
+    assert not first.exists()
 
 
 @pytest.mark.asyncio

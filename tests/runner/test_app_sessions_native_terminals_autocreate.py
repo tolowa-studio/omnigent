@@ -1455,6 +1455,9 @@ async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
+    monkeypatch.setenv("OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN", "test-runner-token")
 
     monkeypatch.setattr(
         "omnigent.harnesses.claude_native.forwarder.supervise_forwarder",
@@ -1531,6 +1534,11 @@ async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     )
 
     launched_sandbox = captured["spec"].os_env.sandbox
+    assert captured["spec"].inherit_env is (sandbox_type == "none")
+    assert "OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN" in captured["spec"].env_unset
+    if sandbox_type == "none":
+        assert "ANTHROPIC_API_KEY" not in captured["spec"].env_unset
+        assert "HTTPS_PROXY" not in captured["spec"].env_unset
     if sandbox_type is None:
         assert launched_sandbox is None
     else:

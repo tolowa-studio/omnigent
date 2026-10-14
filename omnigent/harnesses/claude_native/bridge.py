@@ -1482,9 +1482,9 @@ def approval_wait_marker_path(session_id: str, *, bridge_dir: Path | None = None
     """
     Return the marker path a parked permission hook keeps fresh.
 
-    One marker per hook process: concurrent prompts on one session (parallel
-    tool calls each raising a permission request) own separate files, so the
-    first to finish never clears another's evidence.
+    One marker per wait: runner IPC handles multiple concurrent prompts in one
+    process, so a pid alone would let the first completed wait clear another's
+    evidence.
 
     :param session_id: Omnigent session id whose verdict a hook is waiting
         on, e.g. ``"conv_abc123"``.
@@ -1497,10 +1497,10 @@ def approval_wait_marker_path(session_id: str, *, bridge_dir: Path | None = None
         would fail silently. ``None`` uses this process's own root, which is
         the runner side including the pane reaper.
     :returns: Absolute marker path under this bridge's private approval directory,
-        e.g. ``.../hook-output/approval-waits/<digest>.<pid>.wait``.
+        e.g. ``.../hook-output/approval-waits/<digest>.<pid>.<nonce>.wait``.
     """
     root = approval_wait_marker_root(session_id, bridge_dir=bridge_dir)
-    return root / f"{_approval_wait_digest(session_id)}.{os.getpid()}.wait"
+    return root / f"{_approval_wait_digest(session_id)}.{os.getpid()}.{secrets.token_hex(8)}.wait"
 
 
 def approval_wait_marker_root(session_id: str, *, bridge_dir: Path | None = None) -> Path:
@@ -2117,6 +2117,12 @@ def read_bridge_id(bridge_dir: Path) -> str | None:
         return None
     bridge_id = config.get("bridge_id")
     return bridge_id if isinstance(bridge_id, str) and bridge_id else None
+
+
+def rotation_receipt_path(bridge_dir: Path, old_session_id: str) -> Path:
+    """Return a runner-owned receipt path that survives later rotations."""
+    digest = hashlib.sha256(old_session_id.encode("utf-8")).hexdigest()
+    return bridge_dir / f"rotation-{digest}.json"
 
 
 def write_active_session_id(bridge_dir: Path, session_id: str) -> None:

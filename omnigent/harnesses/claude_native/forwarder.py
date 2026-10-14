@@ -45,6 +45,7 @@ from omnigent.harnesses.claude_native.bridge import (
     read_transcript_items_from_offset,
     read_transcript_items_since_with_position,
     read_transcript_path,
+    rotation_receipt_path,
     transcript_has_forked_from_marker,
     transcript_has_recent_local_command,
     url_component,
@@ -3172,15 +3173,35 @@ def _managed_rotation_target(
     """Accept a journal rotation only when a trusted IPC receipt matches it."""
     if not previous_session_id or not journal_target:
         return None
-    receipt = _read_json_file(bridge_dir / "rotation.json")
+    receipt = _read_json_file(rotation_receipt_path(bridge_dir, previous_session_id))
+    if not receipt:
+        receipt = _read_json_file(bridge_dir / "rotation.json")
     if (
         receipt.get("kind") != kind
         or receipt.get("old_session_id") != previous_session_id
         or receipt.get("new_session_id") != journal_target
-        or read_active_session_id(bridge_dir) != journal_target
     ):
         return None
-    return journal_target
+    active = read_active_session_id(bridge_dir)
+    current = journal_target
+    seen = {previous_session_id}
+    # A second /clear or /fork may finish before this forwarder drains the
+    # first hook. Follow runner-owned receipts to the current active session,
+    # bounded by the IPC rotation limit, rather than losing the first edge.
+    for _ in range(13):
+        if current == active:
+            return journal_target
+        if current in seen:
+            return None
+        seen.add(current)
+        successor = _read_json_file(rotation_receipt_path(bridge_dir, current))
+        if successor.get("old_session_id") != current:
+            return None
+        next_id = successor.get("new_session_id")
+        if not isinstance(next_id, str) or not next_id:
+            return None
+        current = next_id
+    return None
 
 
 async def _maybe_rotate_session_on_clear(
