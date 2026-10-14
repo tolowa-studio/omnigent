@@ -60,7 +60,8 @@ def _timestamp(value: object) -> float | None:
 def _path(bridge_dir: Path, launch_id: str) -> Path:
     if not _LAUNCH_ID.fullmatch(launch_id):
         raise ValueError("Invalid terminal launch identity")
-    return bridge_dir / "hook-output" / f"lifecycle-{launch_id}.json"
+    output_dir = bridge_dir / "hook-output"
+    return (output_dir if output_dir.is_dir() else bridge_dir) / f"lifecycle-{launch_id}.json"
 
 
 def _read(path: Path) -> dict[str, object] | None:

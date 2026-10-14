@@ -2464,6 +2464,22 @@ def test_read_hook_events_from_offset_preserves_partial_trailing_line(tmp_path: 
     assert [record.event_name for record in second.records] == ["Stop"]
 
 
+def test_legacy_live_bridge_keeps_flat_hook_offsets(tmp_path: Path) -> None:
+    """A hot upgrade cannot switch a forwarder's existing byte cursor."""
+    bridge_dir = tmp_path / "legacy"
+    bridge_dir.mkdir()
+    record_hook_event(bridge_dir, {"hook_event_name": "SessionStart", "session_id": "one"})
+    first = read_hook_events_from_offset(bridge_dir, 0, start_event_count=0)
+    record_hook_event(bridge_dir, {"hook_event_name": "Stop", "session_id": "one"})
+    second = read_hook_events_from_offset(
+        bridge_dir, first.byte_offset, start_event_count=first.event_cursor
+    )
+
+    assert not (bridge_dir / "hook-output").exists()
+    assert (bridge_dir / "hooks.jsonl").is_file()
+    assert [record.event_name for record in second.records] == ["Stop"]
+
+
 def test_read_transcript_items_since_surfaces_skill_as_slash_command(
     tmp_path: Path,
 ) -> None:
@@ -12477,6 +12493,7 @@ def test_approval_wait_marker_tracks_a_parked_permission_hook(
 
     # A hook subprocess and the pane reaper derive the same per-bridge root.
     bridge_dir = tmp_path / "omnigent-test" / "approval-parent" / "abc123"
+    (bridge_dir / "hook-output").mkdir(parents=True)
     bridge_marker = claude_native_bridge.approval_wait_marker_path(
         "conv_wait", bridge_dir=bridge_dir
     )

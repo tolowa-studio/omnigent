@@ -1505,12 +1505,14 @@ def approval_wait_marker_path(session_id: str, *, bridge_dir: Path | None = None
 
 def approval_wait_marker_root(session_id: str, *, bridge_dir: Path | None = None) -> Path:
     """Return the marker root under this bridge's mutable hook output."""
-    del session_id
-    return (
-        bridge_dir / HOOK_OUTPUT_DIR / _APPROVAL_WAIT_DIR_NAME
-        if bridge_dir is not None
-        else _APPROVAL_WAIT_ROOT
-    )
+    if bridge_dir is None:
+        return _APPROVAL_WAIT_ROOT / _approval_wait_digest(session_id)
+    output_dir = bridge_dir / HOOK_OUTPUT_DIR
+    if output_dir.is_dir():
+        return output_dir / _APPROVAL_WAIT_DIR_NAME
+    # A live pre-upgrade bridge has no output directory. Keep using its
+    # original marker root until a fresh preparation starts a new journal.
+    return bridge_dir.parent / _APPROVAL_WAIT_DIR_NAME / _approval_wait_digest(session_id)
 
 
 def hook_output_path(bridge_dir: Path, filename: str) -> Path:
@@ -2827,7 +2829,11 @@ def record_hook_event(bridge_dir: Path, payload: _JsonObject) -> None:
     :returns: None.
     """
     _ensure_secure_dir(bridge_dir)
-    _ensure_secure_dir(bridge_dir / HOOK_OUTPUT_DIR)
+    # Do not switch a live pre-upgrade bridge's hook journal mid-stream:
+    # its forwarder still holds byte/line offsets into the flat file.
+    output_dir = bridge_dir / HOOK_OUTPUT_DIR
+    if output_dir.is_dir():
+        _ensure_secure_dir(output_dir)
     envelope = {
         "recorded_at": time.time(),
         "payload": payload,

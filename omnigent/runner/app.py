@@ -7589,6 +7589,7 @@ def create_runner_app(
         from omnigent.harnesses.claude_native.bridge import (
             approval_wait_is_fresh,
             bridge_dir_from_launch_args,
+            read_active_session_id,
         )
         from omnigent.native.native_cost_popup import (
             _tmux_last_client_input_at,
@@ -7623,13 +7624,25 @@ def create_runner_app(
             # active turn, so every signal above reads idle. Reaping it kills the
             # prompt and strands its approval card unanswerable.
             instance = _pane_reaper_registry.get(conv_id, pane.terminal_name, "main")
-            bridge_dir = (
-                bridge_dir_from_launch_args(getattr(instance, "args", []))
-                if pane.terminal_name == "claude" and instance is not None
-                else None
-            )
-            if approval_wait_is_fresh(conv_id, bridge_dir=bridge_dir):
-                return True
+            if pane.terminal_name == "claude":
+                bridge_dir = (
+                    bridge_dir_from_launch_args(getattr(instance, "args", []))
+                    if instance is not None
+                    else None
+                )
+                if bridge_dir is None:
+                    # A missing launch identity cannot prove a parked approval
+                    # is absent. Keep this pane until registry reconciliation.
+                    return True
+                if approval_wait_is_fresh(conv_id, bridge_dir=bridge_dir):
+                    return True
+                active_id = read_active_session_id(bridge_dir)
+                if (
+                    active_id
+                    and active_id != conv_id
+                    and approval_wait_is_fresh(active_id, bridge_dir=bridge_dir)
+                ):
+                    return True
             # An attached viewer alone does not spare the pane (a tab left open
             # overnight kept idle native stacks resident). Count it only when a
             # human drove it recently: a CLI keypress, or any web-bridge event.
