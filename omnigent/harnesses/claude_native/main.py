@@ -215,6 +215,8 @@ _CLAUDE_NONESSENTIAL_TRAFFIC_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 _CLAUDE_RESUME_ITEMS_PAGE_LIMIT = 1000
 _CLAUDE_RESUME_ITEMS_PAGE_LIMIT_FLOOR = 100
 _CLAUDE_MODEL_PROBE_TIMEOUT_S = 20.0
+# A host restart clears this after the CLI is replaced or repaired.
+_CLAUDE_SIGILL_UNSUPPORTED_COMMANDS: set[str] = set()
 #: Wall-clock cap for the per-alias resolution fan-out as a whole; aliases
 #: still unresolved when it expires keep their bare rows (the cache's
 #: revalidation retries them later). Startup dominates each run and
@@ -986,6 +988,8 @@ async def _resolve_claude_model_alias(
         claude_config,
         ("--model", alias),
     )
+    if command in _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS:
+        return {}
     try:
         process = await asyncio.create_subprocess_exec(
             command,
@@ -1012,6 +1016,9 @@ async def _resolve_claude_model_alias(
         _logger.debug("Claude alias resolution timed out for %r", alias)
         return {}
     if process.returncode != 0:
+        if process.returncode == -signal.SIGILL:
+            _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+            _logger.warning("Claude CLI %r is unsupported on this host (SIGILL)", command)
         _logger.debug("Claude alias resolution exited %s for %r", process.returncode, alias)
         return {}
     return _parse_claude_current_model(stdout.decode(errors="replace"))
@@ -1139,6 +1146,9 @@ async def _run_claude_model_probe(
     command, launch_args, env = _claude_model_probe_invocation(
         claude_config, stream_input=stream_input
     )
+    if command in _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS:
+        _logger.debug("Skipping Claude model probe for unsupported CLI %r", command)
+        return None
     requests = [
         {
             "type": "control_request",
@@ -1184,6 +1194,9 @@ async def _run_claude_model_probe(
         return None
     text = stdout.decode(errors="replace")
     if process.returncode != 0:
+        if process.returncode == -signal.SIGILL:
+            _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+            _logger.warning("Claude CLI %r is unsupported on this host (SIGILL)", command)
         _logger.warning(
             "Claude model probe exited %s: %s",
             process.returncode,
