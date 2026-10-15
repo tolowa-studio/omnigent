@@ -10954,6 +10954,59 @@ async def test_probe_claude_model_options_returns_none_on_probe_failure(
     assert await claude_native.probe_claude_model_options(_gateway_probe_config()) is None
 
 
+async def test_probe_claude_model_options_latches_sigill_for_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a CLI that crashes with SIGILL is skipped by catalog retries."""
+    monkeypatch.setattr(claude_native, "_CLAUDE_SIGILL_UNSUPPORTED_COMMANDS", set())
+    monkeypatch.setattr(
+        claude_native,
+        "_claude_model_probe_invocation",
+        lambda *args, **kwargs: ("mini-b-claude", [], {}),
+    )
+    calls = 0
+
+    class _SigillProcess:
+        returncode = -claude_native.signal.SIGILL
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def _fake_exec(*args: object, **kwargs: object) -> _SigillProcess:
+        nonlocal calls
+        calls += 1
+        return _SigillProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    assert await claude_native.probe_claude_model_options(None) is None
+    assert await claude_native.probe_claude_model_options(None) is None
+    assert calls == 1
+
+    monkeypatch.setattr(
+        claude_native,
+        "_claude_model_probe_invocation",
+        lambda *args, **kwargs: ("temporary-claude", [], {}),
+    )
+
+    class _FailedProcess:
+        returncode = 1
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b"temporary failure"
+
+    async def _fake_exec(*args: object, **kwargs: object) -> _FailedProcess:
+        nonlocal calls
+        calls += 1
+        return _FailedProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    assert await claude_native._run_claude_model_probe(None, stream_input=True) is None
+    assert await claude_native._run_claude_model_probe(None, stream_input=True) is None
+    assert calls == 3
+
+
 def _subscription_catalog() -> list[dict[str, object]]:
     """
     A direct-login catalog: alias rows plus the appended settings default."""
