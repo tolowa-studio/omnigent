@@ -9,8 +9,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from omnigent.server.routing_backend import RoutingBackends
-    from omnigent.server.smart_routing import RoutingClient, RoutingSettings
+    from omnigent.server.smart_routing import JevShadowRouting, RoutingClient, RoutingSettings
     from omnigent.spec.types import LLMConfig, PolicySpec
+
+
+def _default_jev_shadow() -> JevShadowRouting:
+    from omnigent.server.smart_routing import JevShadowRouting
+
+    return JevShadowRouting.from_env()
 
 
 def _default_routing_settings() -> RoutingSettings:
@@ -111,3 +117,6 @@ class RuntimeCaps:
     # Always present so consumers read one value object instead of re-parsing
     # config; the defaults describe an unconfigured deployment.
     routing_settings: RoutingSettings = field(default_factory=_default_routing_settings)
+
+    # Server-owned shadow observer; never substitutes its recommendation.
+    jev_shadow: JevShadowRouting = field(default_factory=_default_jev_shadow)
