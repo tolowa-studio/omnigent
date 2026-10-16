@@ -94,10 +94,9 @@ def motion_order_submit_enabled(environ: dict[str, str] | None = None) -> bool:
 
 def motion_order_submit_json_enabled(environ: dict[str, str] | None = None) -> bool:
     env = environ if environ is not None else dict(os.environ)
-    return (
-        env.get(MOTION_ORDER_SUBMIT_ENABLE_ENV, "").strip() == "1"
-        and motion_order_pins_configured(env)
-    )
+    return env.get(
+        MOTION_ORDER_SUBMIT_ENABLE_ENV, ""
+    ).strip() == "1" and motion_order_pins_configured(env)
 
 
 def _submit_disabled_message() -> str:

@@ -162,9 +162,10 @@ def _parse_order_start_command(remainder: str) -> OperatorCommand | None:
 
 def parse_operator_command(text: str) -> OperatorCommand | None:
     stripped = text.strip()
-    if stripped.startswith(ORDER_SUBMIT_JSON_PREFIX) and stripped[
-        len(ORDER_SUBMIT_JSON_PREFIX) : len(ORDER_SUBMIT_JSON_PREFIX) + 1
-    ].isspace():
+    if (
+        stripped.startswith(ORDER_SUBMIT_JSON_PREFIX)
+        and stripped[len(ORDER_SUBMIT_JSON_PREFIX) : len(ORDER_SUBMIT_JSON_PREFIX) + 1].isspace()
+    ):
         contract_json = stripped[len(ORDER_SUBMIT_JSON_PREFIX) :].strip()
         if contract_json:
             return OperatorCommand(
