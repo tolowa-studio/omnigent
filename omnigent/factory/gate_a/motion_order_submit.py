@@ -87,11 +87,17 @@ MotionOrderSubmitSubprocessRunner = Callable[
 
 def motion_order_submit_enabled(environ: dict[str, str] | None = None) -> bool:
     env = environ if environ is not None else dict(os.environ)
-    if env.get(MOTION_ORDER_SUBMIT_ENABLE_ENV, "").strip() != "1":
-        return False
-    if not motion_order_pins_configured(env):
-        return False
-    return bool(env.get(MOTION_TASK_CONTRACTS_DIR_ENV, "").strip())
+    return motion_order_submit_json_enabled(env) and bool(
+        env.get(MOTION_TASK_CONTRACTS_DIR_ENV, "").strip()
+    )
+
+
+def motion_order_submit_json_enabled(environ: dict[str, str] | None = None) -> bool:
+    env = environ if environ is not None else dict(os.environ)
+    return (
+        env.get(MOTION_ORDER_SUBMIT_ENABLE_ENV, "").strip() == "1"
+        and motion_order_pins_configured(env)
+    )
 
 
 def _submit_disabled_message() -> str:
@@ -276,6 +282,31 @@ def load_task_contract_bytes(task_id: str, environ: dict[str, str] | None = None
     return raw
 
 
+def validate_inline_task_contract(contract_json: str) -> tuple[str, str]:
+    if not isinstance(contract_json, str):
+        raise ValueError("task contract must be JSON text")
+    try:
+        raw = contract_json.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("task contract must be UTF-8") from exc
+    if not raw.strip():
+        raise ValueError("task contract is empty")
+    if len(raw) > _MAX_TASK_CONTRACT_CHARS:
+        raise ValueError("task contract exceeds size limit")
+    try:
+        data = json.loads(contract_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"task contract is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("task contract root must be a JSON object")
+    task_id = data.get("idempotency_key")
+    if not isinstance(task_id, str):
+        raise ValueError("task contract idempotency_key must be a string")
+    validate_operator_task_id(task_id)
+    _validate_task_contract_object(data, task_id)
+    return task_id, contract_json
+
+
 def _default_subprocess_runner_with_stdin(
     argv: list[str],
     env: dict[str, str],
@@ -394,7 +425,44 @@ def submit_motion_order_draft(
     validate_operator_task_id(task_id)
     env = dict(environ) if environ is not None else dict(os.environ)
     task_bytes = load_task_contract_bytes(task_id, env)
-    task_text = task_bytes.decode("utf-8")
+    return _submit_motion_order_text(
+        task_id,
+        task_bytes.decode("utf-8"),
+        env,
+        origin_session=origin_session,
+        subprocess_runner=subprocess_runner,
+    )
+
+
+def submit_motion_order_json_draft(
+    contract_json: str,
+    environ: dict[str, str] | None = None,
+    *,
+    origin_session: str | None = None,
+    subprocess_runner: MotionOrderSubmitSubprocessRunner | None = None,
+) -> str:
+    if not motion_order_submit_json_enabled(environ):
+        raise ValueError(
+            f"{MOTION_ORDER_SUBMIT_ENABLE_ENV}=1 and Motion Core pin env vars are required"
+        )
+    task_id, task_text = validate_inline_task_contract(contract_json)
+    return _submit_motion_order_text(
+        task_id,
+        task_text,
+        dict(environ) if environ is not None else dict(os.environ),
+        origin_session=origin_session,
+        subprocess_runner=subprocess_runner,
+    )
+
+
+def _submit_motion_order_text(
+    task_id: str,
+    task_text: str,
+    env: dict[str, str],
+    *,
+    origin_session: str | None,
+    subprocess_runner: MotionOrderSubmitSubprocessRunner | None,
+) -> str:
     contract = json.loads(task_text)
     if not isinstance(contract, dict):
         raise ValueError("task contract root must be a JSON object")

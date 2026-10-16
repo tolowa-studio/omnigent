@@ -23,6 +23,7 @@ from omnigent.factory.gate_a.motion_order_submit import (
     load_task_contract_bytes,
     motion_order_submit_enabled,
     submit_motion_order_draft,
+    submit_motion_order_json_draft,
 )
 from omnigent.factory.gate_a.real_chat import (
     REAL_TASK_CHAT_ENV,
@@ -116,6 +117,14 @@ def test_parse_operator_command_order_submit_exact() -> None:
     assert parse_operator_command("order status ord-abc") == OperatorCommand(
         kind="order_status", task_id="ord-abc"
     )
+
+
+def test_parse_operator_command_order_submit_json() -> None:
+    contract = json.dumps(_sample_contract())
+    assert parse_operator_command(f"order submit-json\n{contract}") == OperatorCommand(
+        kind="order_submit_json", task_id="", contract_json=contract
+    )
+    assert parse_operator_command("order submit-json") is None
 
 
 def test_motion_order_submit_disabled_by_default() -> None:
@@ -257,6 +266,34 @@ async def test_executor_submit_uses_authenticated_session_context_and_ignores_mc
     assert [type(event) for event in events] == [TextChunk, TurnComplete]
 
 
+@pytest.mark.asyncio
+async def test_executor_submit_json_uses_authenticated_session_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind_real_chat_minimal(monkeypatch)
+    submitted: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        "omnigent.inner.factory_gate_a_real_harness.submit_motion_order_json_draft",
+        lambda contract_json, **kwargs: (
+            submitted.append((contract_json, kwargs.get("origin_session")))
+            or "order_submit_ok: true\n"
+        ),
+    )
+    session_id = "67d18011f49647d2af938122c3c45366"
+    contract_json = json.dumps(_sample_contract())
+    events = [
+        event
+        async for event in FactoryGateARealExecutor().run_turn(
+            [Message(role="user", content=f"order submit-json\n{contract_json}")],
+            [{"name": "mcp__stash__remember", "parameters": {"type": "object"}}],
+            "",
+            config=ExecutorConfig(extra={"omnigent_session_id": session_id}),
+        )
+    ]
+    assert submitted == [(contract_json, session_id)]
+    assert [type(event) for event in events] == [TextChunk, TurnComplete]
+
+
 def test_load_task_contract_rejects_unknown_field(tmp_path: Path) -> None:
     contracts = tmp_path / "contracts"
     contract = _sample_contract()
@@ -313,6 +350,59 @@ def test_submit_motion_order_draft_first_create_and_idempotent_replay(tmp_path: 
     assert "submit_status: idempotent_replay" in second
     assert f"order_id: {order_id}" in second
     assert len(list(orders_root.glob("**/*"))) >= 1
+
+
+def test_submit_json_creates_draft_and_replays_without_contract_file(tmp_path: Path) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    _install_fixture_cli(core_root)
+    env = _submit_env(
+        contracts_dir=tmp_path / "unused", core_root=core_root, orders_root=orders_root
+    )
+    del env[MOTION_TASK_CONTRACTS_DIR_ENV]
+    contract_json = json.dumps(_sample_contract())
+    origin_session = "b2541208630048c280a6ffa7339df2d7"
+
+    first = submit_motion_order_json_draft(contract_json, env, origin_session=origin_session)
+    second = submit_motion_order_json_draft(contract_json, env, origin_session=origin_session)
+    order_id = expected_structured_order_id("fixture-client", _TASK_ID)
+    assert f"order_id: {order_id}" in first
+    assert "submit_status: created" in first
+    assert "state: new" in first
+    assert "no worker started" in first
+    assert "submit_status: idempotent_replay" in second
+    task = json.loads((orders_root / order_id / "task.json").read_text())
+    assert task["origin_session"] == origin_session
+
+
+@pytest.mark.parametrize(
+    ("contract_json", "message"),
+    [
+        ("{bad", "not valid JSON"),
+        (" " + "x" * (64 * 1024), "exceeds size limit"),
+        (json.dumps(_sample_contract(origin_session="forged")), "unsupported fields"),
+        (json.dumps(_sample_contract(worktree="relative/path")), "absolute path"),
+    ],
+)
+def test_submit_json_rejects_bad_input_before_cli(
+    tmp_path: Path, contract_json: str, message: str
+) -> None:
+    core_root = tmp_path / "motion-core"
+    orders_root = tmp_path / "orders"
+    orders_root.mkdir()
+    _install_fixture_cli(core_root)
+    env = _submit_env(
+        contracts_dir=tmp_path / "unused", core_root=core_root, orders_root=orders_root
+    )
+    del env[MOTION_TASK_CONTRACTS_DIR_ENV]
+
+    def _forbid_cli(*_args: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("invalid inline task must not launch Motion Core")
+
+    with pytest.raises(ValueError, match=message):
+        submit_motion_order_json_draft(contract_json, env, subprocess_runner=_forbid_cli)
+    assert list(orders_root.iterdir()) == []
 
 
 def test_submit_motion_order_draft_changed_policy_fails_closed(tmp_path: Path) -> None:

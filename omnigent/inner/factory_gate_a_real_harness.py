@@ -17,7 +17,10 @@ from omnigent.factory.gate_a.motion_order_cancel import cancel_motion_order
 from omnigent.factory.gate_a.motion_order_reconcile import reconcile_motion_order
 from omnigent.factory.gate_a.motion_order_start import start_motion_order
 from omnigent.factory.gate_a.motion_order_status import read_motion_order_status_summary
-from omnigent.factory.gate_a.motion_order_submit import submit_motion_order_draft
+from omnigent.factory.gate_a.motion_order_submit import (
+    submit_motion_order_draft,
+    submit_motion_order_json_draft,
+)
 from omnigent.factory.gate_a.real_chat import (
     factory_gate_a_real_enabled,
     latest_user_message_text,
@@ -100,6 +103,19 @@ class FactoryGateARealExecutor(Executor):
             try:
                 summary = submit_motion_order_draft(
                     command.task_id,
+                    origin_session=omnigent_session_id,
+                )
+            except ValueError as exc:
+                yield ExecutorError(message=str(exc))
+                return
+            yield TextChunk(text=summary)
+            yield TurnComplete(response=None)
+            return
+
+        if command.kind == "order_submit_json":
+            try:
+                summary = submit_motion_order_json_draft(
+                    command.contract_json or "",
                     origin_session=omnigent_session_id,
                 )
             except ValueError as exc:
