@@ -238,9 +238,7 @@ def test_pre_tool_use_runner_ipc_unavailable_fails_closed(
         )
         == 0
     )
-    assert (
-        json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "ask"
-    )
+    assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "ask"
 
 
 def test_pre_tool_use_converts_posts_and_returns_deny(

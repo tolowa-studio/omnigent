@@ -2455,3 +2455,161 @@ async def route_turn_or_decline(
         _logger.exception("smart_routing: route_turn failed; the turn runs unrouted")
         return None, None, f"Routing call failed: {failure_detail(exc)}"
     return model, verdict, None
+
+
+@dataclass(frozen=True)
+class JevShadowRouting:
+    """Opt-in observer; its recommendations never become routing results.
+
+    All replicas of this fork must share ``receipt_path`` for the daily cap.
+    Only ``off`` and ``shadow`` modes are accepted; missing storage fails closed.
+    """
+
+    mode: str = "off"
+    receipt_path: str = ""
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"off", "shadow"}:
+            raise ValueError("Jev routing supports only off or shadow")
+
+    @classmethod
+    def from_env(cls) -> JevShadowRouting:
+        """Read operator configuration without reading or exposing credentials."""
+        import os
+
+        return cls(
+            os.getenv("OMNIGENT_JEV_ROUTING", "off"), os.getenv("OMNIGENT_JEV_RECEIPTS", "")
+        )
+
+    async def observe(
+        self,
+        message: str,
+        available_models: dict[str, list[str]],
+        judge: RoutingResult | None,
+        source: str,
+    ) -> None:
+        """Record a paired recommendation, preserving the authoritative pick."""
+        import os
+        import uuid
+        from datetime import UTC, datetime
+        from pathlib import Path
+
+        import httpx
+
+        from omnigent.server.jev_receipts import PAIR_RESERVATION_NANOUSD, JevReceiptStore, digest
+
+        if self.mode != "shadow" or not self.receipt_path:
+            return
+        key = os.getenv("TYPESAFE_API_KEY", "").strip()
+        if not key:
+            return
+        store = JevReceiptStore(Path(self.receipt_path))
+        pair_id = uuid.uuid4().hex
+        candidates = [(h, m) for h, models in available_models.items() for m in models]
+        if not candidates or len(candidates) > 254:
+            return
+        state = {"task": message, "candidates": candidates}
+        pick = None
+        complexity = None
+        status = "unavailable"
+        started = time.monotonic()
+        reservation_day = datetime.now(UTC).date()
+        try:
+            if len(json.dumps(state).encode()) > 2500:
+                return
+            reserved = await asyncio.to_thread(
+                store.append,
+                {
+                    "kind": "reservation",
+                    "pair_id": pair_id,
+                    "reserved_nanousd": PAIR_RESERVATION_NANOUSD,
+                },
+                reserve=True,
+            )
+            if not reserved:
+                return
+            async with asyncio.timeout(3.0), httpx.AsyncClient(timeout=1.4) as client:
+
+                async def ask(instructions: str, criteria: dict[str, str], context: object) -> str:
+                    now = datetime.now(UTC)
+                    if now.date() != reservation_day or (
+                        now.hour == 23 and now.minute == 59 and now.second >= 50
+                    ):
+                        raise ValueError("UTC budget boundary")
+                    payload = {
+                        "model": "jev-1.13.0",
+                        "state": context,
+                        "questions": {
+                            "pick": {
+                                "type": "choice",
+                                "instructions": instructions,
+                                "criteria": criteria,
+                            },
+                        },
+                    }
+                    if len(json.dumps(payload).encode()) > 4096:
+                        raise ValueError("Request exceeds reserved budget")
+                    response = await client.post(
+                        "https://api.typesafe.ai/v1/systemone",
+                        json=payload,
+                        headers={"Authorization": f"Bearer {key}"},
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    if body.get("model") != "jev-1.13.0":
+                        raise ValueError("Unexpected model")
+                    answer = body["answers"]["pick"]
+                    choice = answer["choice"]
+                    if answer["type"] != "choice" or choice not in criteria:
+                        raise ValueError("Invalid choice")
+                    return choice
+
+                complexity = await ask(
+                    "Classify task complexity; ESCAPE if unclear or insufficient context.",
+                    {
+                        "SIMPLE": "Small, routine, well-defined task",
+                        "MODERATE": "Several steps requiring analysis",
+                        "COMPLEX": "Deep reasoning, architecture or substantial uncertainty",
+                        "ESCAPE": "Cannot classify safely",
+                    },
+                    state,
+                )
+                if complexity != "ESCAPE":
+                    criteria = {
+                        str(i): f"Harness {h}, model {m}" for i, (h, m) in enumerate(candidates)
+                    }
+                    criteria["ESCAPE"] = "No suitable model or insufficient context"
+                    selected = await ask(
+                        "Choose the cheapest capable candidate for this task and complexity; "
+                        "candidate order within each harness is cheapest first.",
+                        criteria,
+                        {"task": message, "complexity": complexity},
+                    )
+                    if selected != "ESCAPE":
+                        pick = candidates[int(selected)]
+                status = "picked" if pick is not None else "escape"
+        except Exception:  # noqa: BLE001 — a shadow failure must never affect routing
+            status = "unavailable"
+        try:
+            await asyncio.to_thread(
+                store.append,
+                {
+                    "kind": "paired",
+                    "pair_id": pair_id,
+                    "effect": "none",
+                    "mode": "shadow",
+                    "model": "jev-1.13.0",
+                    "state_hash": digest(state),
+                    "source": source,
+                    "judge_pick_hash": digest([judge.harness, judge.model]) if judge else None,
+                    "jev_pick_hash": digest(pick) if pick else None,
+                    "complexity": complexity,
+                    "status": status,
+                    "followed": judge is not None,
+                    "followed_scope": "router_return_value",
+                    "agreement": pick == (judge.harness, judge.model) if pick and judge else None,
+                    "latency_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
+        except Exception:  # noqa: BLE001 — storage failure cannot change the live pick
+            _logger.warning("Jev shadow receipt unavailable")
