@@ -11,6 +11,8 @@ from typing import Any
 
 from dev.factory.gate_a_real.spec import RealTaskSpec
 
+RECEIPT_SCHEMA = "omnigent.factory.gate_a_real.receipt/v1"
+
 
 @dataclass
 class RealTaskReceipt:
@@ -36,7 +38,7 @@ class RealTaskReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "schema": "omnigent.factory.gate_a_real.receipt/v1",
+            "schema": RECEIPT_SCHEMA,
             "ok": self.ok,
             "task_id": self.task_id,
             "spec_sha256": self.spec_sha256,
