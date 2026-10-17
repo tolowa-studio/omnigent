@@ -422,3 +422,16 @@ python -m dev.factory.gate_a_real \
 Artifacts: `builder.*`, `review-attempts/`, `verify.log`, `verify.meta.json`,
 `freeze/`, `receipt.json`. Each review attempt retains its own stream, stderr,
 and metadata; the receipt points to the latest review log.
+
+### Factory run retention (local automation)
+
+Automated factory runs that write `factory-*` trees under
+`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT` (or the parent of a
+`factory-*` `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS` dir) are pruned at the
+end of each real-task run and via `python -m dev.factory.gate_a_real.prune`.
+Retention keeps the newest runs, anything younger than 48 hours, and any run
+marked in-progress or with an open PR (`run.json`); configure with
+`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_KEEP_LAST` (default `10`) and
+`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_KEEP_HOURS` (default `48`). Use
+`--dry-run` to log deletions without removing data. Prune failures never fail
+the gate run.

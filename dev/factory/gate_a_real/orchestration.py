@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dev.factory.gate_a_real.artifact_retention import prune_after_real_task_run
 from dev.factory.gate_a_real.agent_run import (
     AgentRunCapture,
     builder_stdout_acceptable,
@@ -1057,3 +1058,4 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         shutil.rmtree(config_parent, ignore_errors=True)
         if review_config_parent is not None:
             shutil.rmtree(review_config_parent, ignore_errors=True)
+        prune_after_real_task_run(artifacts)
