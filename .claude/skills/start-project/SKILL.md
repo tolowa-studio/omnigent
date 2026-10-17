@@ -5,7 +5,8 @@ description: >-
   Onboard or refresh an Active project — recall Stash /projects/{slug} and /ops/tolowa-factory,
   read the Notion hub + repo instruction files, gap-scan against MOTION Hub Standard v4,
   then create or link All Clients, hub/manifest, Linear project/epic with acceptance criteria,
-  and Stash namespace with the hub URL. Write links back to the hub and append State of the Site.
+  and Stash namespace with the hub URL. Supports hub-first and repo-first/design-first (live site +
+  repo as truth; build Notion from them). Write links back to the hub and append State of the Site.
   Load when starting a new Tolowa engagement, promoting Backlog→Active, or running a hub compliance pass.
 ---
 
@@ -41,6 +42,25 @@ Collect or infer:
 If any of segment, owner, or success metric are missing, **stop after gap report** — open a
 Linear issue with acceptance criteria rather than inventing doctrine.
 
+### Path: hub-first vs repo-first / design-first
+
+| Path | When | Source of truth for *decisions already made* |
+| --- | --- | --- |
+| **Hub-first** | Greenfield or Notion-led promotion (e.g. Konative pattern) | Hub manifest + handoff docs; repo catches up |
+| **Repo-first / design-first** | Working repo **and** live (or staging) site already exist — often designed in Claude/Cursor before a MOTION hub | **Repo + live site**; Notion is built **from** them, not the other way around |
+
+**Repo-first / design-first (e.g. Tolowa Craft):**
+
+1. Treat shipped copy, IA, design handoffs, and `docs/design/*-HANDOFF.md` as canonical for positioning and product decisions — do not relitigate in Notion without a written change/decision.
+2. **Build the hub from the repo/site:**
+   - **Positioning canon** (manifest): narrative, wedge, forbidden framings — extracted from live pages + handoff, not from stale Factory Handoff prose alone.
+   - **GTM / offer lines:** one manifest subsection or §1 table row per revenue line visible on the site. For Craft, map at least: **low voltage**, **Starlink**, **networking / technology**, **property management** (plus any other live pillars).
+   - **Backend scaffolding map** (§4 or manifest canonical surfaces): document what exists and what is planned — e.g. **Sanity CMS**, **CRM / Twenty**, **lead management**, **email / Resend**, **deploy** (host, CDN, env). Link to runbook and env; flag gaps as Linear issues with AC.
+3. **Stay in sync:** when narrative or offers change in repo or on site, update **positioning canon** and **append State of the Site** (append-only). Hub follows product; Librarian routes new docs into §4/§5, not duplicate canon at hub root.
+4. Factory Handoff bundles (like Craft’s) remain **history / research** — link from §5 or manifest, do not overwrite; hub is the Active operating surface.
+
+If unsure which path applies: live site + meaningful `docs/design/*-HANDOFF.md` or pass-4 build in flight → default **repo-first**.
+
 ---
 
 ## 1. Recall Stash (always first)
@@ -55,6 +75,15 @@ Do not treat Stash as authority over signed Notion briefs or versioned repo file
 
 ## 2. Read instruction surfaces (repo + Notion)
 
+**Order depends on path:** repo-first → repo + live site **before** inferring hub content; hub-first → Notion hub/manifest first, then repo.
+
+### Repo + live site (repo-first: read this block first)
+
+1. Clone/checkout; read `CLAUDE.md`, `docs/RUNBOOK.md`, `docs/design/*-HANDOFF.md`.
+2. Inventory **live or staging URL**: page structure, offer lines, CTAs, regulatory copy locks.
+3. Inventory **backend scaffolding** from code/config/docs: CMS (e.g. Sanity), CRM (e.g. Twenty), forms/leads, email (e.g. Resend), deploy pipeline — note what is wired vs stubbed.
+4. Then read `AGENTS.md` / `now.md` if present (add from templates if missing).
+
 ### Notion
 
 1. Fetch the project's **Project Hub** (title pattern: `{name} — Project Hub`) or the handoff bundle if not yet promoted.
@@ -62,9 +91,11 @@ Do not treat Stash as authority over signed Notion briefs or versioned repo file
 3. Fetch **State of the Site** under §4 (Website & Product) if present.
 4. Skim **MOTION OS Documentation** only for spine links — do not mass-edit Method in this playbook.
 
+**Repo-first:** use Notion gaps to plan **hub content extracted from repo/site** (positioning canon, GTM lines, scaffolding map) — not to replace product truth.
+
 ### Repo (source of truth for agent behavior)
 
-Read in order:
+Read in order (after repo-first site pass if applicable):
 
 1. `AGENTS.md` — authority, forbidden actions, human gates.
 2. `CLAUDE.md` — project context (do not overwrite; extend via PR if needed).
@@ -142,8 +173,10 @@ Create or update row: `Stage=Active`, `Slug`, `Hub URL`, `Hub manifest page`, `S
 
 - One canonical `{display_name} — Project Hub`.
 - Child **Hub Manifest** with positioning canon, section schema, naming, doc-type routing, canonical surfaces, forbidden surfaces, librarian behavior, revision log.
-- Required §-pages per v4; **State of the Site** under §4 (append-only).
+- **Repo-first:** seed manifest **positioning canon** and **GTM line table** from live site + design handoff; add **backend scaffolding map** (CMS, CRM, leads, email, deploy) with links to repo paths and runbook.
+- Required §-pages per v4; **State of the Site** under §4 (append-only) — first entry documents hub bootstrap from repo/site snapshot date + URLs.
 - Register canonical docs in **Documents DB** with `Project`, `Section`, `Status`, `Source`.
+- **Ongoing sync:** product/narrative changes land in repo/site first; follow with manifest canon update + State of the Site append (never silent drift).
 
 Do **not** archive or overwrite existing pages; mark superseded only when Jeramey directs.
 
