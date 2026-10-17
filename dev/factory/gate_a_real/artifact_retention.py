@@ -31,6 +31,8 @@ RUN_METADATA_FILE = "run.json"
 RUN_METADATA_SCHEMA = "omnigent.factory.gate_a_real.run/v1"
 RUN_LOCK_FILE = "run.lock"
 RECEIPT_FILE = "receipt.json"
+RESUME_STATE_FILE = "resume_state.json"
+BUILDER_STDOUT_FILE = "builder.stdout.txt"
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -79,11 +81,37 @@ def resolve_artifacts_root(
     root_raw = env.get(REAL_TASK_ARTIFACTS_ROOT_ENV, "").strip()
     if root_raw:
         return _require_resolved_dir(root_raw)
-    if current_run_dir is not None:
-        return current_run_dir.resolve().parent
+
+    artifacts_resolved: Path | None = None
     artifacts_raw = env.get(REAL_TASK_ARTIFACTS_ENV, "").strip()
     if artifacts_raw:
-        return _require_resolved_dir(artifacts_raw).parent
+        artifacts_resolved = _require_resolved_dir(artifacts_raw)
+
+    if current_run_dir is not None:
+        run_dir = current_run_dir.resolve()
+        if artifacts_resolved is not None:
+            if artifacts_resolved == run_dir:
+                if is_artifact_run_dir(run_dir):
+                    return run_dir.parent
+                _logger.warning(
+                    "%s points at the artifacts root, not a task run directory; "
+                    "skipping retention prune",
+                    REAL_TASK_ARTIFACTS_ENV,
+                )
+                return None
+            if artifacts_resolved == run_dir.parent:
+                return run_dir.parent
+        return run_dir.parent
+
+    if artifacts_resolved is not None:
+        if is_artifact_run_dir(artifacts_resolved):
+            return artifacts_resolved.parent
+        _logger.warning(
+            "%s points at the artifacts root, not a task run directory; "
+            "skipping retention prune",
+            REAL_TASK_ARTIFACTS_ENV,
+        )
+        return None
     return None
 
 
@@ -282,8 +310,7 @@ def _is_abandoned(
     now: datetime,
     abandoned_after: timedelta,
 ) -> bool:
-    receipt_path = run_dir / RECEIPT_FILE
-    if receipt_path.is_file():
+    if _receipt_metadata(run_dir) is not None:
         return False
     if _has_active_lock_or_process(run_dir, metadata):
         return False
@@ -360,17 +387,25 @@ def _run_sort_time(run_dir: Path, metadata: dict[str, Any] | None) -> datetime:
     return datetime.fromtimestamp(mtime, tz=timezone.utc)
 
 
+def _has_gate_a_marker(path: Path) -> bool:
+    run_json = path / RUN_METADATA_FILE
+    if run_json.is_file() and not run_json.is_symlink():
+        return True
+    if _receipt_metadata(path) is not None:
+        return True
+    for name in (BUILDER_STDOUT_FILE, RESUME_STATE_FILE):
+        marker = path / name
+        if marker.is_file() and not marker.is_symlink():
+            return True
+    return False
+
+
 def is_artifact_run_dir(path: Path) -> bool:
     if not path.is_dir() or path.is_symlink():
         return False
-    if _TASK_ID_RE.fullmatch(path.name):
-        return True
-    receipt = path / RECEIPT_FILE
-    if receipt.is_file() and not receipt.is_symlink():
-        data = _load_json_object(receipt)
-        if data is not None and data.get("schema") == RECEIPT_SCHEMA:
-            return True
-    return False
+    if not _TASK_ID_RE.fullmatch(path.name):
+        return False
+    return _has_gate_a_marker(path)
 
 
 def is_factory_run_dir(path: Path) -> bool:

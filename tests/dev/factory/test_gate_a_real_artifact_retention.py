@@ -71,22 +71,41 @@ def _set_mtime(path: Path, when: datetime) -> None:
     os.utime(path, (ts, ts))
 
 
-def test_is_artifact_run_dir_task_id_and_receipt_schema(tmp_path: Path) -> None:
+def test_is_artifact_run_dir_requires_task_id_and_marker(tmp_path: Path) -> None:
     root = tmp_path / "artifacts"
     root.mkdir()
-    task = root / "tol-1402-feature"
-    task.mkdir()
-    assert is_artifact_run_dir(task) is True
+    empty = root / "tol-1402-feature"
+    empty.mkdir()
+    assert is_artifact_run_dir(empty) is False
+    marked = _touch_task_dir(
+        root,
+        "tol-1402-feature",
+        receipt={"ok": True, "completed_at": "2026-10-17T12:00:00+00:00"},
+    )
+    assert is_artifact_run_dir(marked) is True
     other = root / "not a task!"
     other.mkdir()
     assert is_artifact_run_dir(other) is False
-    legacy = root / "legacy-run"
-    legacy.mkdir()
-    (legacy / "receipt.json").write_text(
-        json.dumps({"schema": RECEIPT_SCHEMA, "task_id": "legacy-run"}) + "\n",
-        encoding="utf-8",
-    )
-    assert is_artifact_run_dir(legacy) is True
+    logs = root / "logs"
+    logs.mkdir()
+    (logs / "factory.log").write_text("noise\n", encoding="utf-8")
+    assert is_artifact_run_dir(logs) is False
+    assert list_factory_run_dirs(root) == [] or all(r.name != "logs" for r in list_factory_run_dirs(root))
+
+
+def test_invalid_receipt_does_not_block_abandoned_or_discovery(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    run_dir = root / "tol-bad-receipt"
+    run_dir.mkdir()
+    (run_dir / "receipt.json").write_text('{"schema": "wrong"}\n', encoding="utf-8")
+    (run_dir / "builder.stdout.txt").write_text("partial\n", encoding="utf-8")
+    _set_mtime(run_dir, now - timedelta(days=20))
+    assert is_artifact_run_dir(run_dir) is True
+    records = list_factory_run_dirs(root, now=now)
+    stale = next(record for record in records if record.name == "tol-bad-receipt")
+    assert stale.in_progress is False
 
 
 def test_resolve_artifacts_root_single_spec_without_factory_prefix(
@@ -95,8 +114,11 @@ def test_resolve_artifacts_root_single_spec_without_factory_prefix(
 ) -> None:
     root = tmp_path / "artifact-roots"
     root.mkdir()
-    task_dir = root / "tol-1402-feature"
-    task_dir.mkdir()
+    task_dir = _touch_task_dir(
+        root,
+        "tol-1402-feature",
+        receipt={"ok": True, "completed_at": "2026-10-17T12:00:00+00:00"},
+    )
     monkeypatch.delenv(REAL_TASK_ARTIFACTS_ROOT_ENV, raising=False)
     monkeypatch.delenv(REAL_TASK_ARTIFACTS_ENV, raising=False)
     assert resolve_artifacts_root(current_run_dir=task_dir) == root.resolve()
@@ -201,14 +223,10 @@ def test_prune_after_real_task_run_swallows_exceptions(tmp_path: Path) -> None:
     assert result is None
 
 
-def test_m2_layout_fixture_dry_run_deletes() -> None:
+def test_m2_layout_fixture_dry_run_deletes(tmp_path: Path) -> None:
     """Mirrors ARTIFACTS_ROOT/<task_id>/ on M2; documents expected dry-run deletes."""
     now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
-    root = Path("/tmp/m2-artifact-retention-fixture")
-    if root.exists():
-        import shutil
-
-        shutil.rmtree(root)
+    root = tmp_path / "artifact-roots"
     root.mkdir()
     _touch_task_dir(
         root,
@@ -271,7 +289,52 @@ def test_list_factory_run_dirs_ignores_symlink_children(tmp_path: Path) -> None:
 def test_resolve_artifacts_root_from_registry_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "artifacts"
     root.mkdir()
-    task = root / "tol-task"
-    task.mkdir()
+    _touch_task_dir(root, "tol-task", receipt={"ok": False, "completed_at": "2026-01-01T00:00:00+00:00"})
     monkeypatch.setenv(REAL_TASK_ARTIFACTS_ROOT_ENV, str(root))
     assert resolve_artifacts_root() == root.resolve()
+
+
+def test_resolve_artifacts_root_refuses_when_artifacts_env_points_at_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    root = tmp_path / "artifact-roots"
+    root.mkdir()
+    monkeypatch.delenv(REAL_TASK_ARTIFACTS_ROOT_ENV, raising=False)
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(root))
+    assert resolve_artifacts_root() is None
+    assert "artifacts root" in caplog.text.lower()
+    run_dir = _touch_task_dir(
+        root,
+        "tol-1402-feature",
+        receipt={"ok": True, "completed_at": "2026-10-17T12:00:00+00:00"},
+    )
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(root))
+    assert resolve_artifacts_root(current_run_dir=run_dir) == root.resolve()
+    monkeypatch.setenv(REAL_TASK_ARTIFACTS_ENV, str(root))
+    assert resolve_artifacts_root(current_run_dir=root) is None
+
+
+def test_prune_never_deletes_logs_sibling(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+    root = tmp_path / "artifact-roots"
+    root.mkdir()
+    logs = root / "logs"
+    logs.mkdir()
+    (logs / "rollout.log").write_text("x" * 10_000 + "\n", encoding="utf-8")
+    _touch_task_dir(
+        root,
+        "tol-stale",
+        started_at=now - timedelta(days=30),
+        receipt={"ok": True, "completed_at": (now - timedelta(days=30)).isoformat()},
+    )
+    from dev.factory.gate_a_real.artifact_retention import ArtifactRetentionConfig
+
+    config = ArtifactRetentionConfig(keep_last=0, keep_hours=0)
+    prune_artifacts_root(root, config=config, now=now, dry_run=False)
+    assert logs.is_dir()
+    assert not (root / "tol-stale").exists()

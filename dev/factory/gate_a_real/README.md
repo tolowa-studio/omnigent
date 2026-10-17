@@ -425,13 +425,26 @@ and metadata; the receipt points to the latest review log.
 
 ### Factory run retention (local automation)
 
-Automated factory runs that write `factory-*` trees under
-`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT` (or the parent of a
-`factory-*` `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS` dir) are pruned at the
-end of each real-task run and via `python -m dev.factory.gate_a_real.prune`.
-Retention keeps the newest runs, anything younger than 48 hours, and any run
-marked in-progress or with an open PR (`run.json`); configure with
-`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_KEEP_LAST` (default `10`) and
+Registry layout stores one run per task under
+`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_ROOT/<task_id>/`. Only those
+`task_id` directories (strict token naming, same as the registry) that contain
+at least one Gate A marker (`run.json`, schema-valid `receipt.json`,
+`builder.stdout.txt`, or `resume_state.json`) are eligible for retention.
+Do not place shared siblings (for example `logs/`) under the artifacts root;
+they are never pruned because they are not task run directories.
+
+Each gate run writes `run.json` (status, timestamps, optional PR fields) and
+an active `run.lock` (PID) while the run is in flight. Optional PR metadata
+comes from `OMNIGENT_FACTORY_GATE_A_REAL_RUN_PR_NUMBER` and
+`OMNIGENT_FACTORY_GATE_A_REAL_RUN_PR_STATE` at finish time.
+
+Pruning runs at the end of each real-task gate (and via
+`python -m dev.factory.gate_a_real.prune`). Retention keeps the newest runs,
+anything younger than 48 hours, in-progress runs (live lock/PID or
+non-abandoned partial work), and unmerged PRs recorded in `run.json`. Configure
+with `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_KEEP_LAST` (default `10`) and
 `OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS_KEEP_HOURS` (default `48`). Use
-`--dry-run` to log deletions without removing data. Prune failures never fail
-the gate run.
+`--dry-run` to log deletions without removing data. If
+`OMNIGENT_FACTORY_GATE_A_REAL_ARTIFACTS` points at the artifacts root itself
+(rather than a `<task_id>/` run directory), retention refuses to prune and logs
+a warning. Prune failures never fail the gate run.
