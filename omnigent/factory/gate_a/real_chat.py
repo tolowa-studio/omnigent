@@ -36,6 +36,7 @@ _RECEIPT_MANIFEST_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RUN_APPROVED_PREFIX = "run approved task "
 REVIEW_APPROVED_PREFIX = "review approved task "
 ORDER_SUBMIT_PREFIX = "order submit "
+ORDER_SUBMIT_JSON_PREFIX = "order submit-json"
 ORDER_START_PREFIX = "order start "
 ORDER_START_GATE_B_COMMENT_FLAG = "--gate-b-comment-id"
 ORDER_CANCEL_PREFIX = "order cancel "
@@ -54,12 +55,14 @@ class OperatorCommand:
         "status",
         "order_status",
         "order_submit",
+        "order_submit_json",
         "order_start",
         "order_cancel",
         "order_reconcile",
     ]
     task_id: str
     gate_b_comment_id: str | None = None
+    contract_json: str | None = None
 
 
 def factory_gate_a_real_enabled(environ: dict[str, str] | None = None) -> bool:
@@ -159,6 +162,15 @@ def _parse_order_start_command(remainder: str) -> OperatorCommand | None:
 
 def parse_operator_command(text: str) -> OperatorCommand | None:
     stripped = text.strip()
+    if (
+        stripped.startswith(ORDER_SUBMIT_JSON_PREFIX)
+        and stripped[len(ORDER_SUBMIT_JSON_PREFIX) : len(ORDER_SUBMIT_JSON_PREFIX) + 1].isspace()
+    ):
+        contract_json = stripped[len(ORDER_SUBMIT_JSON_PREFIX) :].strip()
+        if contract_json:
+            return OperatorCommand(
+                kind="order_submit_json", task_id="", contract_json=contract_json
+            )
     if stripped.startswith(ORDER_SUBMIT_PREFIX):
         task_id = stripped[len(ORDER_SUBMIT_PREFIX) :].strip()
         if task_id and " " not in task_id:
@@ -556,6 +568,8 @@ def usage_hint() -> str:
         "  order status <order_id>  (Motion Core snapshot; requires motion pin env vars)\n"
         "  order submit <task_id>  (Motion Core draft only; no worker launch; "
         "optional existing issue from approved contract)\n"
+        "  order submit-json <JSON task contract>  (Motion Core draft only; "
+        "no worker launch; contract may span lines)\n"
         "  order start <order_id>  (Motion Core launch; opt-in start + local approval file)\n"
         "  order start <order_id> --gate-b-comment-id <uuid>  "
         "(enforced Gate B host; same opt-in)\n"
