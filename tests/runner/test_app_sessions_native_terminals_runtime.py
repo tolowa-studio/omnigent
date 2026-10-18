@@ -802,7 +802,8 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     ]
     assert app_server.listen_url is not None
     assert app_server.listen_url.startswith("ws://127.0.0.1:")
-    assert launched.env["OPENAI_API_KEY"] == "sk-test"
+    # Inference credentials stay on the app-server; the remote TUI must not inherit them.
+    assert "OPENAI_API_KEY" not in launched.env
     assert "IGNORED" not in launched.env
     assert launched.env["CODEX_HOME"] == str(app_server.codex_home)
     assert launched.tmux_start_on_attach is False
@@ -840,6 +841,8 @@ async def test_auto_create_codex_terminal_uses_persisted_resume_launch_config(
     del forward_calls[0]["subagent_router"]
     assert "turn_router" in forward_calls[0]
     del forward_calls[0]["turn_router"]
+    assert "hook_ipc" in forward_calls[0]
+    del forward_calls[0]["hook_ipc"]
     assert forward_calls == [
         {
             "session_id": session_id,

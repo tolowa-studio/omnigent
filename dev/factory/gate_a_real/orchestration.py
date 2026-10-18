@@ -12,17 +12,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dev.factory.gate_a_real.artifact_retention import (
-    begin_artifact_run,
-    finish_artifact_run,
-    prune_after_real_task_run,
-)
 from dev.factory.gate_a_real.agent_run import (
     AgentRunCapture,
     builder_stdout_acceptable,
     review_stdout_forbidden_tool_violations,
     review_stdout_passes,
     run_agent_capture,
+)
+from dev.factory.gate_a_real.artifact_retention import (
+    begin_artifact_run,
+    finish_artifact_run,
+    prune_after_real_task_run,
 )
 from dev.factory.gate_a_real.constants import (
     BUILD_TIMEOUT_SECONDS,

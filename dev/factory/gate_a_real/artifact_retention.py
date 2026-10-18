@@ -58,7 +58,9 @@ class PruneResult:
     skipped: tuple[str, ...]
 
 
-def retention_config_from_environ(environ: dict[str, str] | None = None) -> ArtifactRetentionConfig:
+def retention_config_from_environ(
+    environ: dict[str, str] | None = None,
+) -> ArtifactRetentionConfig:
     env = environ if environ is not None else dict(os.environ)
     keep_last_raw = env.get(KEEP_LAST_ENV, "").strip()
     keep_hours_raw = env.get(KEEP_HOURS_ENV, "").strip()
@@ -107,8 +109,7 @@ def resolve_artifacts_root(
         if is_artifact_run_dir(artifacts_resolved):
             return artifacts_resolved.parent
         _logger.warning(
-            "%s points at the artifacts root, not a task run directory; "
-            "skipping retention prune",
+            "%s points at the artifacts root, not a task run directory; skipping retention prune",
             REAL_TASK_ARTIFACTS_ENV,
         )
         return None
@@ -146,7 +147,9 @@ def finish_artifact_run(
     status = "in_progress"
     completed_at: str | None = None
     if receipt is not None:
-        completed_at = receipt.get("completed_at") if isinstance(receipt.get("completed_at"), str) else None
+        completed_at = (
+            receipt.get("completed_at") if isinstance(receipt.get("completed_at"), str) else None
+        )
         status = "completed" if receipt.get("ok") is True else "failed"
     pr_number, pr_state, pr_merged = _pr_fields_from_environ(env)
     payload: dict[str, Any] = {

@@ -221,6 +221,8 @@ async def test_runner_busy_check_spares_a_pane_parked_on_an_approval(
     # Bound by name when the app is built, so stub before building: no tmux here.
     monkeypatch.setattr(native_cost_popup, "_tmux_last_client_input_at", lambda *_args: None)
     monkeypatch.setattr(native_cost_popup, "_tmux_window_activity_at", lambda *_args: None)
+    monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_APPROVAL_WAIT_ROOT", tmp_path / "approval-waits")
     registry = TerminalRegistry()
     app = create_runner_app(
@@ -237,8 +239,8 @@ async def test_runner_busy_check_spares_a_pane_parked_on_an_approval(
     assert not await reaper._is_busy(pane)
 
     marker = claude_native_bridge.approval_wait_marker_path("conv_parked")
-    marker.parent.mkdir(parents=True)
     claude_native_bridge.touch_approval_wait_marker(marker)
+    assert marker.exists()
     assert await reaper._is_busy(pane)
     # Another session's parked prompt does not spare this pane.
     other = PaneRef("conv_other", pane.terminal_id, "claude", pane.socket_path)
@@ -262,6 +264,8 @@ async def test_runner_busy_check_counts_a_viewer_only_on_recent_input(
         native_cost_popup, "_tmux_last_client_input_at", lambda *_args: tmux_input_at["value"]
     )
     monkeypatch.setattr(native_cost_popup, "_tmux_window_activity_at", lambda *_args: None)
+    monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
+    monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_APPROVAL_WAIT_ROOT", tmp_path / "approval-waits")
     registry = TerminalRegistry()
     instance = TerminalInstance(
