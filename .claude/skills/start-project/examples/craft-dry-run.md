@@ -26,7 +26,7 @@ Decisions already made live in **repo + live/staging site**, not in the Factory 
 
 **Would read first (when repo clone available):** site routes and content model, then handoff + runbook, then map backend from code/config.
 
-**Notion (session start — not executed in this dry-run):** resolve `factory_brief_url` from Stash `/projects/craft` or query [Agent Index: Start Here](INDEX_URL_TBD) projects data source by `Slug=craft` (index columns only); **`notion-fetch` only** `Tolowa Craft — Factory Brief` if it exists. Do **not** fetch Project Hub, manifest, or State of the Site unless Jeramey asks to **refresh hub**. Check `truncated` / `unknown_block_*` on fetch. Legacy Factory Handoff bundle remains history — link only, not session-start canon.
+**Notion (session start — not executed in this dry-run):** resolve `factory_brief_url` from Stash `/projects/craft` or query [Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023) — All Clients `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4` by `Slug=craft` (columns only: `Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`); **`notion-fetch` only** `Tolowa Craft — Factory Brief` from **`Factory brief`**. Do **not** fetch Project Hub, manifest, or State of the Site unless Jeramey asks to **refresh hub**. Check `truncated` / `unknown_block_*` on fetch. Legacy Factory Handoff bundle remains history — link only, not session-start canon.
 
 ## Hub content to build from repo/site (not invent in Notion)
 

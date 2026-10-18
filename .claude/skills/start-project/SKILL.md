@@ -91,7 +91,7 @@ Do not treat Stash as authority over signed Notion briefs or versioned repo file
 
 1. **Resolve `factory_brief_url`** (in order):
    - From Stash recall **`/projects/{slug}`** → `factory_brief_url` when present.
-   - Else query the projects index: **[Agent Index: Start Here](INDEX_URL_TBD)** — use its linked **projects data source** (or All Clients equivalent). `notion-query-data-sources` with `mode: "rows"` (or SQL) filtered on **`Slug`** = `{slug}`; select **only** the columns needed to act (e.g. `Slug`, `Display name`, `Factory brief URL`, `Repo`, `Hub URL`, `Stage`). Do **not** pull full row bodies for every project or fetch the database page.
+   - Else query **[Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023)** — backing data source **All Clients** `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4`. `notion-query-data-sources` with `mode: "rows"` (or SQL) filtered on **`Slug`** = `{slug}`; request **only** these properties: `Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`. Use **`Factory brief`** as `factory_brief_url`; **`AIOS Hub`** is the hub URL when needed later (refresh hub only). Do **not** query unfiltered rows or fetch the database/index page body.
    - If the brief URL is still missing, stop after reporting what is missing — do not substitute by fetching the whole hub tree.
 2. **`notion-fetch`** **only** the page at that URL — title pattern **`{display_name} — Factory Brief`**. One page per project; deep history stays on linked child pages, not inlined in the brief.
 3. **Check fetch metadata:** if `truncated` is true or `unknown_block_count` / `unknown_block_ids` are non-zero, say so in the finish report and fetch linked child pages **only** when the brief explicitly points there — never bulk-fetch the hub to “fill gaps.”
@@ -177,7 +177,7 @@ Execute only when the user explicitly authorized **start** (not dry-run).
 
 ### All Clients
 
-Create or update row: `Stage=Active`, `Slug`, **`Factory brief URL`** (page `{display_name} — Factory Brief`), `Hub URL`, `Hub manifest page`, `Section schema`, aliases, `Librarian managed=true`, `Meeting-notes auto-move=false`.
+Create or update row: `Stage=Active`, `Slug`, **`Factory brief`** (page `{display_name} — Factory Brief`), **`AIOS Hub`** (hub), `Kind`, `Repo`, `Last brief edit`, `Hub manifest page`, `Section schema`, aliases, `Librarian managed=true`, `Meeting-notes auto-move=false`.
 
 ### Notion hub tree
 
@@ -247,4 +247,4 @@ Return to the human:
 - Compliant hub example: Konative (see v3/v4 compliant table in Hub Standard).
 - Linear team: **Tolowa Studio** (`TOL-*`).
 - Stash layout: `/projects/{slug}`, `/clients/{slug}`, `/ops/tolowa-factory`.
-- Agent project index: [Agent Index: Start Here](INDEX_URL_TBD) (projects data source / All Clients — query by `Slug`, property-only).
+- Agent project index: [Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023) — All Clients `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4` (`Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`).
