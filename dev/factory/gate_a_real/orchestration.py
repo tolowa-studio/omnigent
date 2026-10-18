@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dev.factory.gate_a_real.artifact_retention import (
+    begin_artifact_run,
+    finish_artifact_run,
+    prune_after_real_task_run,
+)
 from dev.factory.gate_a_real.agent_run import (
     AgentRunCapture,
     builder_stdout_acceptable,
@@ -441,6 +446,7 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
     run_result: RealTaskRunResult | None = None
 
     try:
+        begin_artifact_run(artifacts, spec.task_id)
         profile = materialize_real_task_cursor_config_dir(config_parent)
         config_problems = _validate_builder_config_hashes(spec, profile["effective_config_hashes"])
         if config_problems:
@@ -1057,3 +1063,5 @@ def run_real_task_gate(spec: RealTaskSpec, options: RealTaskRunOptions) -> RealT
         shutil.rmtree(config_parent, ignore_errors=True)
         if review_config_parent is not None:
             shutil.rmtree(review_config_parent, ignore_errors=True)
+        finish_artifact_run(artifacts)
+        prune_after_real_task_run(artifacts)
