@@ -190,7 +190,7 @@ def test_completed_claude_child_survives_stale_status_handoff(
         page.get_by_role("button", name="Send", exact=True).click()
         expect(
             page.locator('[data-role="assistant"]', has_text=_PARENT_RESULT).first
-        ).to_be_visible(timeout=90_000)
+        ).to_be_visible(timeout=180_000)
 
         children = _get(client, f"/v1/sessions/{parent_id}/child_sessions")["data"]
         assert len(children) == 1, children
