@@ -2530,12 +2530,13 @@ class JevShadowRouting:
         complexity = None
         status = "unavailable"
         started = time.monotonic()
-        reservation_day = utc_now().date()
+        started_utc = utc_now()
+        reservation_day = started_utc.date()
         reserved = False
         try:
             if len(json.dumps(state).encode()) > 2500:
                 return
-            if not utc_budget_open():
+            if not utc_budget_open(started_utc):
                 return
             reserved = await asyncio.to_thread(
                 store.append,

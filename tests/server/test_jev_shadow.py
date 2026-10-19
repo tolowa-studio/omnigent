@@ -269,6 +269,7 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
         datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC),
     ]
     cursor = {"i": 0}
 
