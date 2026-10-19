@@ -211,15 +211,7 @@ def test_receipt_store_does_not_mutate_persisted_rows(tmp_path):
 async def test_budget_boundary_refunds_reservation(tmp_path, monkeypatch, second):
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
     frozen = datetime(2026, 1, 1, 23, 59, second, tzinfo=UTC)
-
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            if tz is UTC:
-                return frozen
-            return datetime.now(tz)
-
-    monkeypatch.setattr("omnigent.server.jev_receipts.datetime", FrozenDateTime)
+    monkeypatch.setattr("omnigent.server.jev_receipts.utc_now", lambda: frozen)
     assert utc_budget_open(frozen) == (second < 50)
 
     post = AsyncMock()
@@ -269,20 +261,15 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
         datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC),
-        datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC),
     ]
     cursor = {"i": 0}
 
-    class SteppingDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            if tz is UTC:
-                i = min(cursor["i"], len(instants) - 1)
-                cursor["i"] += 1
-                return instants[i]
-            return datetime.now(tz)
+    def stepping_utc_now():
+        i = min(cursor["i"], len(instants) - 1)
+        cursor["i"] += 1
+        return instants[i]
 
-    monkeypatch.setattr("omnigent.server.jev_receipts.datetime", SteppingDateTime)
+    monkeypatch.setattr("omnigent.server.jev_receipts.utc_now", stepping_utc_now)
 
     async def post(self, url, **kwargs):
         return httpx.Response(
