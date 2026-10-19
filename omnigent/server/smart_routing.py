@@ -2507,9 +2507,9 @@ class JevShadowRouting:
         from pathlib import Path
 
         from omnigent.server.jev_receipts import (
+            PAIR_RESERVATION_NANOUSD,
             JevBudgetBoundaryError,
             JevReceiptStore,
-            PAIR_RESERVATION_NANOUSD,
             digest,
             utc_budget_open,
             utc_now,

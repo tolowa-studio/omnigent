@@ -228,12 +228,15 @@ async def test_budget_boundary_refunds_reservation(tmp_path, monkeypatch, second
     await JevShadowRouting("shadow", str(path)).observe(
         "task", {"codex": ["small"]}, None, "oss-llm"
     )
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
     if second >= 50:
         assert post.await_count == 0
-        assert not any(row.get("kind") == "reservation" for row in rows)
+        if path.exists():
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            assert not any(row.get("kind") == "reservation" for row in rows)
     else:
         post.assert_awaited()
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        assert any(row.get("kind") == "reservation" for row in rows)
 
 
 async def test_typesafe_key_not_logged_in_httpx_debug(tmp_path, monkeypatch, caplog):
@@ -261,6 +264,7 @@ async def test_typesafe_key_not_logged_in_httpx_debug(tmp_path, monkeypatch, cap
 async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
     instants = [
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),

@@ -50,7 +50,8 @@ class JevReceiptStore:
         fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "r+", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
-            today = utc_now().date().isoformat()
+            now = utc_now()
+            today = now.date().isoformat()
             spent = 0
             previous = None
             for line in stream:
@@ -69,7 +70,7 @@ class JevReceiptStore:
             row = dict(
                 record,
                 day=today,
-                timestamp_utc=utc_now().isoformat(),
+                timestamp_utc=now.isoformat(),
                 previous_hash=previous,
             )
             row["receipt_hash"] = digest(row)
