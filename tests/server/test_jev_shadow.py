@@ -300,8 +300,8 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
         "task", {"codex": ["small"]}, None, "oss-llm"
     )
     post.assert_not_awaited()
-    assert releases == [pytest.approx(())] or releases  # noqa: B015 - ensure release ran
-    assert releases and releases[0][1] == "2026-01-01"
+    assert releases
+    assert releases[0][1] == "2026-01-01"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     reserved = sum(row.get("reserved_nanousd", 0) for row in rows if row["day"] == "2026-01-01")
     assert reserved == 0
