@@ -62,6 +62,13 @@ def _agents_row(page: Page, child_id: str) -> Locator:
     return row
 
 
+@pytest.mark.skipif(
+    os.environ.get("GITHUB_REPOSITORY") == "tolowa-studio/omnigent",
+    reason=(
+        "Fork pull-request CI does not reliably complete real Claude Agent "
+        "delegation within shard timeouts; run locally with claude and tmux."
+    ),
+)
 @pytest.mark.flaky(reruns=5, reruns_delay=10)
 @pytest.mark.timeout(360)
 def test_completed_claude_child_survives_stale_status_handoff(
