@@ -1,6 +1,7 @@
 """Configuration and transport regressions for workflow-owned reproduction."""
 
 import json
+import os
 import socket
 import threading
 from pathlib import Path
@@ -118,6 +119,7 @@ def test_relay_preserves_response_after_client_half_close(tmp_path):
 def test_relay_requires_private_socket_directory(tmp_path):
     directory = tmp_path / "shared"
     directory.mkdir(mode=0o755)
+    os.chmod(directory, 0o755)
     path = directory / "service.sock"
     with pytest.raises(ValueError, match="owner-only"):
         with Relay(unix_listener=path, tcp_target=("127.0.0.1", 1)):

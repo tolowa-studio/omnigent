@@ -9,6 +9,7 @@ seeded ``initial_items`` keep store-assigned ids.
 from __future__ import annotations
 
 import json
+import unittest.mock
 from typing import Any
 
 import httpx
@@ -117,13 +118,12 @@ def test_stable_id_reuse_by_another_author_is_refused() -> None:
     assert excinfo.value.code == ErrorCode.CONFLICT
 
 
-def _stub_runner(
-    monkeypatch: pytest.MonkeyPatch,
+def _runner_client_stub(
     forwarded: list[dict[str, Any]] | None = None,
     *,
     status: int = 202,
-) -> httpx.AsyncClient:
-    """Answer every forwarded turn with ``status``, recording each body in ``forwarded``."""
+) -> tuple[httpx.AsyncClient, Any]:
+    """Build a fake runner client and matching ``_get_runner_client`` stub."""
 
     def accept(request: httpx.Request) -> httpx.Response:
         if forwarded is not None:
@@ -140,30 +140,31 @@ def _stub_runner(
     async def get_runner_client(*_: Any, **__: Any) -> httpx.AsyncClient:
         return fake_runner
 
-    monkeypatch.setattr("omnigent.server.routes.sessions._get_runner_client", get_runner_client)
-    return fake_runner
+    return fake_runner, get_runner_client
 
 
 @pytest.mark.asyncio
 async def test_web_send_persists_under_its_stable_id_and_dedupes_a_retry(
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End to end through the store: the persisted item's id IS the stable id, once."""
-    forwarded: list[dict[str, Any]] = []
-    fake_runner = _stub_runner(monkeypatch, forwarded)
-    try:
-        agent = await create_test_agent(client)
-        create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
-        assert create.status_code == 201, create.text
-        session_id = create.json()["id"]
-        payload = {"type": "message", "data": _user_message()}
+    from omnigent.server.routes import sessions as sessions_mod
 
-        first = await client.post(f"/v1/sessions/{session_id}/events", json=payload)
-        assert first.status_code == 202, first.text
-        # A client whose acknowledgement was lost retries with the same stable id.
-        retry = await client.post(f"/v1/sessions/{session_id}/events", json=payload)
-        assert retry.status_code == 202, retry.text
+    forwarded: list[dict[str, Any]] = []
+    fake_runner, get_runner_client = _runner_client_stub(forwarded)
+    try:
+        with unittest.mock.patch.object(sessions_mod, "_get_runner_client", get_runner_client):
+            agent = await create_test_agent(client)
+            create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
+            assert create.status_code == 201, create.text
+            session_id = create.json()["id"]
+            payload = {"type": "message", "data": _user_message()}
+
+            first = await client.post(f"/v1/sessions/{session_id}/events", json=payload)
+            assert first.status_code == 202, first.text
+            # A client whose acknowledgement was lost retries with the same stable id.
+            retry = await client.post(f"/v1/sessions/{session_id}/events", json=payload)
+            assert retry.status_code == 202, retry.text
     finally:
         await fake_runner.aclose()
 
@@ -178,7 +179,6 @@ async def test_web_send_persists_under_its_stable_id_and_dedupes_a_retry(
 @pytest.mark.asyncio
 async def test_runner_rejected_send_stays_persisted_without_delivery_acknowledgement(
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A refused forward keeps the item (persist-before-forward) but acknowledges nothing.
 
@@ -187,20 +187,25 @@ async def test_runner_rejected_send_stays_persisted_without_delivery_acknowledge
     error -- that draft stays in the composer until a live ``session.input.consumed``.
     """
     consumed: list[str] = []
-    monkeypatch.setattr(
-        "omnigent.server.routes._sessions.orchestration._publish_input_consumed",
-        lambda _session_id, item, *_args, **_kwargs: consumed.append(item.id),
-    )
-    fake_runner = _stub_runner(monkeypatch, status=501)
+    from omnigent.server.routes import sessions as sessions_mod
+
+    fake_runner, get_runner_client = _runner_client_stub(status=501)
     try:
-        agent = await create_test_agent(client)
-        create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
-        assert create.status_code == 201, create.text
-        session_id = create.json()["id"]
-        refused = await client.post(
-            f"/v1/sessions/{session_id}/events",
-            json={"type": "message", "data": _user_message()},
-        )
+        with (
+            unittest.mock.patch.object(sessions_mod, "_get_runner_client", get_runner_client),
+            unittest.mock.patch(
+                "omnigent.server.routes._sessions.orchestration._publish_input_consumed",
+                lambda _session_id, item, *_args, **_kwargs: consumed.append(item.id),
+            ),
+        ):
+            agent = await create_test_agent(client)
+            create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
+            assert create.status_code == 201, create.text
+            session_id = create.json()["id"]
+            refused = await client.post(
+                f"/v1/sessions/{session_id}/events",
+                json={"type": "message", "data": _user_message()},
+            )
     finally:
         await fake_runner.aclose()
 
@@ -220,7 +225,6 @@ async def test_runner_rejected_send_stays_persisted_without_delivery_acknowledge
 @pytest.mark.asyncio
 async def test_web_send_of_an_edited_body_under_a_persisted_stable_id_gets_a_fresh_id(
     client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A pre-adoption web bundle's edited retry keeps working: new item, new id, still run.
 
@@ -229,22 +233,25 @@ async def test_web_send_of_an_edited_body_under_a_persisted_stable_id_gets_a_fre
     restore and resend it under the same id forever) nor run under the ORIGINAL
     item: it is persisted under a store-assigned id, as before adoption.
     """
+    from omnigent.server.routes import sessions as sessions_mod
+
     forwarded: list[dict[str, Any]] = []
-    fake_runner = _stub_runner(monkeypatch, forwarded)
+    fake_runner, get_runner_client = _runner_client_stub(forwarded)
     edited_text = f"{_TEXT}, but edited"
     try:
-        agent = await create_test_agent(client)
-        create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
-        assert create.status_code == 201, create.text
-        session_id = create.json()["id"]
-        events = f"/v1/sessions/{session_id}/events"
+        with unittest.mock.patch.object(sessions_mod, "_get_runner_client", get_runner_client):
+            agent = await create_test_agent(client)
+            create = await client.post("/v1/sessions", json={"agent_id": agent["id"]})
+            assert create.status_code == 201, create.text
+            session_id = create.json()["id"]
+            events = f"/v1/sessions/{session_id}/events"
 
-        first = await client.post(events, json={"type": "message", "data": _user_message()})
-        assert first.status_code == 202, first.text
-        edited = _user_message()
-        edited["content"] = [{"type": "input_text", "text": edited_text}]
-        resend = await client.post(events, json={"type": "message", "data": edited})
-        assert resend.status_code == 202, resend.text
+            first = await client.post(events, json={"type": "message", "data": _user_message()})
+            assert first.status_code == 202, first.text
+            edited = _user_message()
+            edited["content"] = [{"type": "input_text", "text": edited_text}]
+            resend = await client.post(events, json={"type": "message", "data": edited})
+            assert resend.status_code == 202, resend.text
     finally:
         await fake_runner.aclose()
 

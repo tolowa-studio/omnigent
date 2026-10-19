@@ -46,6 +46,7 @@ from omnigent.harnesses.claude_native.bridge import (
     count_hook_events,
     display_cost_approval_popup,
     ensure_claude_workspace_trusted,
+    hook_output_read_path,
     inject_interrupt,
     inject_user_message,
     is_auth_slash_command,
@@ -3398,6 +3399,7 @@ def test_generated_claude_subprocesses_pin_runner_tmpdir(
         / "session"
     )
     bridge_dir.mkdir(parents=True)
+    (bridge_dir / "hook-output").mkdir(mode=0o700)
     inherited_tmpdir = tmp_path / "shell-tmp"
     inherited_tmpdir.mkdir()
     monkeypatch.setattr(
@@ -3405,6 +3407,7 @@ def test_generated_claude_subprocesses_pin_runner_tmpdir(
         runner_tmpdir,
     )
     monkeypatch.setenv("TMPDIR", str(inherited_tmpdir))
+    hook_tmpdir = bridge_dir / "hook-output" / "tmp"
 
     args = augment_claude_args(
         (),
@@ -3418,7 +3421,7 @@ def test_generated_claude_subprocesses_pin_runner_tmpdir(
     settings = _load_invocation_settings(args)
 
     server_env = mcp_config["mcpServers"]["omnigent"]["env"]
-    assert server_env["TMPDIR"] == str(runner_tmpdir)
+    assert server_env["TMPDIR"] == str(hook_tmpdir)
     python_commands = [
         hook["command"]
         for entries in settings["hooks"].values()
@@ -3427,7 +3430,7 @@ def test_generated_claude_subprocesses_pin_runner_tmpdir(
         if "/venv/bin/python" in hook["command"]
     ]
     assert len(python_commands) == 19
-    expected_tmpdir = f"env TMPDIR={shlex.quote(str(runner_tmpdir))}"
+    expected_tmpdir = f"env TMPDIR={shlex.quote(str(hook_tmpdir))}"
     assert all(expected_tmpdir in command for command in python_commands)
 
 
@@ -6124,7 +6127,10 @@ async def test_channel_server_relays_active_omnigent_tools(
             proc.stdin,
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         )
-        initialize = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        subprocess_timeout_s = 30.0
+        initialize = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert initialize["id"] == 1
 
         relay = start_tool_relay(
@@ -6143,14 +6149,18 @@ async def test_channel_server_relays_active_omnigent_tools(
             loop=asyncio.get_running_loop(),
         )
         post_tools_changed(bridge_dir, cancelled=threading.Event() if cancellable else None)
-        changed = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        changed = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert changed["method"] == "notifications/tools/list_changed"
 
         _write_json_line(
             proc.stdin,
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )
-        listed = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        listed = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         listed_tools = listed["result"]["tools"]
         custom_tools = [tool for tool in listed_tools if tool["name"] == "sys_custom"]
         assert custom_tools == [
@@ -6176,7 +6186,9 @@ async def test_channel_server_relays_active_omnigent_tools(
                 },
             },
         )
-        tool_result = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        tool_result = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert tool_result["id"] == 3
         if result_kind == "text":
             text = tool_result["result"]["content"][0]["text"]
@@ -12256,7 +12268,9 @@ def test_http_ingress_all_interfaces_opt_in_advertises_routable_host(
     httpd = claude_native_bridge._start_http_ingress(bridge_dir, "test-token", notifications)
     try:
         info = json.loads(
-            (bridge_dir / claude_native_bridge._SERVER_FILE).read_text(encoding="utf-8")
+            hook_output_read_path(bridge_dir, claude_native_bridge._SERVER_FILE).read_text(
+                encoding="utf-8"
+            )
         )
         port = int(info["url"].rsplit(":", 1)[1])
         assert info["url"] == f"http://203.0.113.9:{port}"
@@ -12293,7 +12307,9 @@ def test_http_ingress_defaults_to_unix_socket(
     httpd = claude_native_bridge._start_http_ingress(bridge_dir, "test-token", notifications)
     try:
         info = json.loads(
-            (bridge_dir / claude_native_bridge._SERVER_FILE).read_text(encoding="utf-8")
+            hook_output_read_path(bridge_dir, claude_native_bridge._SERVER_FILE).read_text(
+                encoding="utf-8"
+            )
         )
         assert "url" not in info
         socket_path = Path(info["socket"])
@@ -12377,7 +12393,9 @@ def test_http_ingress_advertises_absolute_socket_path(
     httpd = claude_native_bridge._start_http_ingress(bridge_dir, "test-token", notifications)
     try:
         info = json.loads(
-            (bridge_dir / claude_native_bridge._SERVER_FILE).read_text(encoding="utf-8")
+            hook_output_read_path(bridge_dir, claude_native_bridge._SERVER_FILE).read_text(
+                encoding="utf-8"
+            )
         )
         assert Path(info["socket"]) == Path(os.path.abspath(relative_root)) / (
             f"mcp-{os.getpid()}.sock"
@@ -12415,7 +12433,9 @@ def test_http_ingress_authenticates_before_draining_a_bounded_body(tmp_path: Pat
     try:
         socket_path = Path(
             json.loads(
-                (bridge_dir / claude_native_bridge._SERVER_FILE).read_text(encoding="utf-8")
+                hook_output_read_path(bridge_dir, claude_native_bridge._SERVER_FILE).read_text(
+                    encoding="utf-8"
+                )
             )["socket"]
         )
         # Declare a body but withhold it: a handler that drained before

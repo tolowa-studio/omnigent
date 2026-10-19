@@ -7630,18 +7630,25 @@ def create_runner_app(
                     if instance is not None
                     else None
                 )
-                if bridge_dir is None:
-                    # A missing launch identity cannot prove a parked approval
-                    # is absent. Keep this pane until registry reconciliation.
+                launch_args = getattr(instance, "args", []) if instance is not None else []
+                if instance is not None and bridge_dir is None and launch_args:
+                    # A registered pane whose launch args omit a bridge identity
+                    # cannot prove a parked approval is absent. Keep it until
+                    # registry reconciliation. Unregistered panes and registry
+                    # rows without launch argv fall through to the shared idle
+                    # signals below.
                     return True
-                if approval_wait_is_fresh(conv_id, bridge_dir=bridge_dir):
-                    return True
-                active_id = read_active_session_id(bridge_dir)
-                if (
-                    active_id
-                    and active_id != conv_id
-                    and approval_wait_is_fresh(active_id, bridge_dir=bridge_dir)
-                ):
+                if bridge_dir is not None:
+                    if approval_wait_is_fresh(conv_id, bridge_dir=bridge_dir):
+                        return True
+                    active_id = read_active_session_id(bridge_dir)
+                    if (
+                        active_id
+                        and active_id != conv_id
+                        and approval_wait_is_fresh(active_id, bridge_dir=bridge_dir)
+                    ):
+                        return True
+                elif approval_wait_is_fresh(conv_id):
                     return True
             elif approval_wait_is_fresh(conv_id):
                 # Other native harnesses retain the shared marker root.
