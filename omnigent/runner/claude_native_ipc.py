@@ -216,7 +216,11 @@ def start_claude_native_ipc(
             json={"target_session_id": new_id},
         )
         transfer.raise_for_status()
-        receipt = {"kind": kind, "old_session_id": old_id, "new_session_id": new_id}
+        receipt: dict[str, object] = {
+            "kind": kind,
+            "old_session_id": old_id,
+            "new_session_id": new_id,
+        }
         _write_json_file(rotation_receipt_path(bridge_dir, old_id), receipt)
         _write_json_file(bridge_dir / "rotation.json", receipt)
         write_active_session_id(bridge_dir, new_id)
