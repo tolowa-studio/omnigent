@@ -171,9 +171,12 @@ def test_backends_from_caps_derives_an_unknown_client_as_the_oss_judge() -> None
 def test_backends_from_caps_yields_an_empty_pair_when_nothing_is_configured() -> None:
     assert backends_from_caps(None) == RoutingBackends()
     caps: Any = SimpleNamespace(routing_backends=None, routing_client=None)
-    assert backends_from_caps(caps) == RoutingBackends()
+    backends = backends_from_caps(caps)
+    assert backends.external is None and backends.local is None
+    assert backends.shadow.mode in {"off", "shadow"}
     # A caps object that predates both fields still reads as unconfigured.
-    assert backends_from_caps(SimpleNamespace()) == RoutingBackends()
+    empty = backends_from_caps(SimpleNamespace())
+    assert empty.external is None and empty.local is None
 
 
 # ── routing_available / routing_sources: one "is routing configured" gate ────

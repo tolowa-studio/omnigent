@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -13,6 +16,7 @@ from omnigent.server.jev_receipts import (
     PAIR_RESERVATION_NANOUSD,
     JevReceiptStore,
     digest,
+    utc_budget_open,
 )
 from omnigent.server.routing_backend import (
     RoutingBackends,
@@ -180,6 +184,156 @@ def test_runtime_caps_observer_reaches_both_backends(tmp_path):
     caps = RuntimeCaps(routing_backends=RoutingBackends(local=client), jev_shadow=shadow)
     assert backends_from_caps(caps).shadow is shadow
     assert backends_from_caps(caps).local is client
+
+
+def test_backends_from_caps_keeps_jev_shadow_without_routing_client(tmp_path):
+    from omnigent.server.routing_backend import backends_from_caps
+
+    shadow = JevShadowRouting("shadow", str(tmp_path / "receipts"))
+    caps = SimpleNamespace(routing_backends=None, routing_client=None, jev_shadow=shadow)
+    backends = backends_from_caps(caps)
+    assert backends.shadow is shadow
+    assert backends.local is None and backends.external is None
+
+
+def test_receipt_store_does_not_mutate_persisted_rows(tmp_path):
+    path = tmp_path / "receipts.jsonl"
+    store = JevReceiptStore(path)
+    store.append({"kind": "probe", "note": "first"})
+    before = path.read_text()
+    store.append({"kind": "probe", "note": "second"})
+    assert before in path.read_text()
+    first_line = json.loads(before.splitlines()[0])
+    assert "receipt_hash" in first_line
+
+
+@pytest.mark.parametrize("second", [49, 50])
+async def test_budget_boundary_refunds_reservation(tmp_path, monkeypatch, second):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
+    frozen = datetime(2026, 1, 1, 23, 59, second, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is UTC:
+                return frozen
+            return datetime.now(tz)
+
+    monkeypatch.setattr("omnigent.server.jev_receipts.datetime", FrozenDateTime)
+    monkeypatch.setattr("omnigent.server.smart_routing.datetime", FrozenDateTime)
+    assert utc_budget_open(frozen) == (second < 50)
+
+    post = AsyncMock()
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    path = tmp_path / "receipts.jsonl"
+    await JevShadowRouting("shadow", str(path)).observe(
+        "task", {"codex": ["small"]}, None, "oss-llm"
+    )
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    if second >= 50:
+        assert post.await_count == 0
+        assert not any(row.get("kind") == "reservation" for row in rows)
+    else:
+        post.assert_awaited()
+
+
+async def test_typesafe_key_not_logged_in_httpx_debug(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "super-secret-key")
+    caplog.set_level(logging.DEBUG, logger="httpx")
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "model": "jev-1.13.0",
+                "answers": {"pick": {"type": "choice", "choice": "ESCAPE"}},
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    path = tmp_path / "receipts.jsonl"
+    await JevShadowRouting("shadow", str(path)).observe(
+        "task", {"codex": ["small"]}, None, "oss-llm"
+    )
+    assert "super-secret-key" not in caplog.text
+
+
+async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
+    instants = [
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC),
+    ]
+    cursor = {"i": 0}
+
+    class SteppingDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is UTC:
+                i = min(cursor["i"], len(instants) - 1)
+                cursor["i"] += 1
+                return instants[i]
+            return datetime.now(tz)
+
+    monkeypatch.setattr("omnigent.server.jev_receipts.datetime", SteppingDateTime)
+    monkeypatch.setattr("omnigent.server.smart_routing.datetime", SteppingDateTime)
+
+    async def post(self, url, **kwargs):
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "model": "jev-1.13.0",
+                "answers": {"pick": {"type": "choice", "choice": "ESCAPE"}},
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    path = tmp_path / "receipts.jsonl"
+    await JevShadowRouting("shadow", str(path)).observe(
+        "task", {"codex": ["small"]}, None, "oss-llm"
+    )
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    reserved = sum(row.get("reserved_nanousd", 0) for row in rows if row["day"] == "2026-01-01")
+    assert reserved == 0
+    assert any(row.get("kind") == "reservation_release" for row in rows)
+
+
+async def test_shared_typesafe_client_across_pair(tmp_path, monkeypatch):
+    import omnigent.server.smart_routing as smart_routing
+
+    monkeypatch.setattr(smart_routing, "_jev_typesafe_http", None)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
+    created: list[httpx.AsyncClient] = []
+    real_init = httpx.AsyncClient.__init__
+
+    def track_init(self, *args, **kwargs):
+        created.append(self)
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", track_init)
+
+    async def post(self, url, **kwargs):
+        choices = kwargs["json"]["questions"]["pick"]["criteria"]
+        choice = "MODERATE" if "MODERATE" in choices else "0"
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={
+                "model": "jev-1.13.0",
+                "answers": {"pick": {"type": "choice", "choice": choice}},
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    path = tmp_path / "receipts.jsonl"
+    await JevShadowRouting("shadow", str(path)).observe(
+        "task", {"codex": ["small", "large"]}, None, "oss-llm"
+    )
+    assert len(created) == 1
 
 
 async def test_slow_observer_never_delays_routing():

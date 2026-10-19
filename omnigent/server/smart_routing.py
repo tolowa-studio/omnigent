@@ -2457,6 +2457,19 @@ async def route_turn_or_decline(
     return model, verdict, None
 
 
+_jev_typesafe_http: httpx.AsyncClient | None = None
+
+
+def _jev_typesafe_http_client() -> httpx.AsyncClient:
+    """One shared Typesafe client per process; auth stays off logged headers."""
+    import httpx
+
+    global _jev_typesafe_http
+    if _jev_typesafe_http is None or _jev_typesafe_http.is_closed:
+        _jev_typesafe_http = httpx.AsyncClient(timeout=1.4)
+    return _jev_typesafe_http
+
+
 @dataclass(frozen=True)
 class JevShadowRouting:
     """Opt-in observer; its recommendations never become routing results.
@@ -2494,9 +2507,13 @@ class JevShadowRouting:
         from datetime import UTC, datetime
         from pathlib import Path
 
-        import httpx
-
-        from omnigent.server.jev_receipts import PAIR_RESERVATION_NANOUSD, JevReceiptStore, digest
+        from omnigent.server.jev_receipts import (
+            JevBudgetBoundaryError,
+            PAIR_RESERVATION_NANOUSD,
+            JevReceiptStore,
+            digest,
+            utc_budget_open,
+        )
 
         if self.mode != "shadow" or not self.receipt_path:
             return
@@ -2514,8 +2531,11 @@ class JevShadowRouting:
         status = "unavailable"
         started = time.monotonic()
         reservation_day = datetime.now(UTC).date()
+        reserved = False
         try:
             if len(json.dumps(state).encode()) > 2500:
+                return
+            if not utc_budget_open():
                 return
             reserved = await asyncio.to_thread(
                 store.append,
@@ -2528,14 +2548,14 @@ class JevShadowRouting:
             )
             if not reserved:
                 return
-            async with asyncio.timeout(3.0), httpx.AsyncClient(timeout=1.4) as client:
+            client = _jev_typesafe_http_client()
+            auth = _bearer_auth(key)
+            async with asyncio.timeout(3.0):
 
                 async def ask(instructions: str, criteria: dict[str, str], context: object) -> str:
                     now = datetime.now(UTC)
-                    if now.date() != reservation_day or (
-                        now.hour == 23 and now.minute == 59 and now.second >= 50
-                    ):
-                        raise ValueError("UTC budget boundary")
+                    if now.date() != reservation_day or not utc_budget_open(now):
+                        raise JevBudgetBoundaryError("UTC budget boundary")
                     payload = {
                         "model": "jev-1.13.0",
                         "state": context,
@@ -2552,7 +2572,7 @@ class JevShadowRouting:
                     response = await client.post(
                         "https://api.typesafe.ai/v1/systemone",
                         json=payload,
-                        headers={"Authorization": f"Bearer {key}"},
+                        auth=auth,
                     )
                     response.raise_for_status()
                     body = response.json()
@@ -2588,8 +2608,25 @@ class JevShadowRouting:
                     if selected != "ESCAPE":
                         pick = candidates[int(selected)]
                 status = "picked" if pick is not None else "escape"
+        except JevBudgetBoundaryError:
+            status = "unavailable"
+            if reserved:
+                try:
+                    await asyncio.to_thread(store.release_reservation, pair_id)
+                except Exception:  # noqa: BLE001 — release failure must not affect routing
+                    _logger.warning("Jev shadow reservation release failed", exc_info=True)
+        except ValueError as exc:
+            status = "unavailable"
+            if str(exc) == "Invalid receipt chain":
+                _logger.error("Jev shadow receipt ledger corrupt", exc_info=True)
+            else:
+                _logger.warning("Jev shadow observer rejected: %s", exc)
+        except json.JSONDecodeError:
+            status = "unavailable"
+            _logger.error("Jev shadow receipt ledger unreadable", exc_info=True)
         except Exception:  # noqa: BLE001 — a shadow failure must never affect routing
             status = "unavailable"
+            _logger.warning("Jev shadow observer failed", exc_info=True)
         try:
             await asyncio.to_thread(
                 store.append,
@@ -2611,5 +2648,12 @@ class JevShadowRouting:
                     "latency_ms": round((time.monotonic() - started) * 1000),
                 },
             )
+        except ValueError as exc:
+            if str(exc) == "Invalid receipt chain":
+                _logger.error("Jev shadow paired receipt ledger corrupt", exc_info=True)
+            else:
+                _logger.warning("Jev shadow paired receipt rejected: %s", exc)
+        except json.JSONDecodeError:
+            _logger.error("Jev shadow paired receipt ledger unreadable", exc_info=True)
         except Exception:  # noqa: BLE001 — storage failure cannot change the live pick
-            _logger.warning("Jev shadow receipt unavailable")
+            _logger.warning("Jev shadow receipt unavailable", exc_info=True)

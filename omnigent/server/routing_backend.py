@@ -31,6 +31,8 @@ from omnigent.server.smart_routing import JevShadowRouting
 
 _logger = logging.getLogger(__name__)
 # custom-lint: disable-next=workspace-scoped-cache -- task objects are globally unique
+# Pending shadow observers; all mutations run on the event loop under the lock.
+_shadow_tasks_lock = asyncio.Lock()
 _shadow_tasks: set[asyncio.Task[None]] = set()
 
 #: Which router produced a decision. ``"databricks-aigw"`` is the external
@@ -202,25 +204,29 @@ async def route_with_fallback(
         available_models,
         gateway_backed=gateway_backed,
     )
-    if call is not None and backends.shadow.mode == "shadow" and len(_shadow_tasks) < 8:
+    if call is not None and backends.shadow.mode == "shadow":
+        candidates = {harness: list(models) for harness, models in available_models.items()}
 
         async def observe() -> None:
             try:
                 await backends.shadow.observe(message, candidates, call.result, call.source)
             except Exception:  # noqa: BLE001 — observers cannot change authoritative routing
-                _logger.warning("Jev shadow observer unavailable")
+                _logger.warning("Jev shadow observer unavailable", exc_info=True)
 
-        candidates = {harness: list(models) for harness, models in available_models.items()}
-        task = asyncio.create_task(observe())
-        _shadow_tasks.add(task)
-        task.add_done_callback(_shadow_tasks.discard)
+        async with _shadow_tasks_lock:
+            if len(_shadow_tasks) < 8:
+                task = asyncio.create_task(observe())
+                _shadow_tasks.add(task)
+                task.add_done_callback(_shadow_tasks.discard)
     return call
 
 
 async def drain_shadow_observers() -> None:
     """Wait for pending receipts in probes/tests; interactive routing never waits."""
-    if _shadow_tasks:
-        await asyncio.gather(*tuple(_shadow_tasks))
+    async with _shadow_tasks_lock:
+        pending = tuple(_shadow_tasks)
+    if pending:
+        await asyncio.gather(*pending)
 
 
 def reported_gateway_inference(
@@ -289,7 +295,7 @@ def backends_from_caps(caps: Any) -> RoutingBackends:  # type: ignore[explicit-a
         return backends if shadow == backends.shadow else replace(backends, shadow=shadow)
     client = getattr(caps, "routing_client", None)
     if client is None:
-        return RoutingBackends()
+        return RoutingBackends(shadow=getattr(caps, "jev_shadow", JevShadowRouting.from_env()))
     from omnigent.server.smart_routing import ExternalRoutingClient
 
     if isinstance(client, ExternalRoutingClient):

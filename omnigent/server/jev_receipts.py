@@ -16,6 +16,16 @@ DAILY_CAP_NANOUSD = 40_000_000
 PAIR_RESERVATION_NANOUSD = 2 * 8192 * 42
 
 
+class JevBudgetBoundaryError(ValueError):
+    """Raised when a shadow pair must not start or continue past the UTC-day cutoff."""
+
+
+def utc_budget_open(now: datetime | None = None) -> bool:
+    """Whether a new reservation or Typesafe call is allowed at *now* (UTC)."""
+    instant = now or datetime.now(UTC)
+    return not (instant.hour == 23 and instant.minute == 59 and instant.second >= 50)
+
+
 def digest(value: object) -> str:
     """Hash canonical JSON without retaining request text."""
     return hashlib.sha256(
@@ -39,13 +49,16 @@ class JevReceiptStore:
             spent = 0
             previous = None
             for line in stream:
-                row = json.loads(line)
-                claimed = row.pop("receipt_hash")
+                parsed = json.loads(line)
+                claimed = parsed["receipt_hash"]
+                row = {key: value for key, value in parsed.items() if key != "receipt_hash"}
                 if row["previous_hash"] != previous or digest(row) != claimed:
                     raise ValueError("Invalid receipt chain")
                 previous = claimed
                 if row["day"] == today:
                     spent += row.get("reserved_nanousd", 0)
+            if reserve and not utc_budget_open():
+                return False
             if reserve and spent + PAIR_RESERVATION_NANOUSD > DAILY_CAP_NANOUSD:
                 return False
             row = dict(
@@ -59,3 +72,13 @@ class JevReceiptStore:
             stream.flush()
             os.fsync(stream.fileno())
             return True
+
+    def release_reservation(self, pair_id: str) -> None:
+        """Undo a pair reservation when no Typesafe traffic was consumed."""
+        self.append(
+            {
+                "kind": "reservation_release",
+                "pair_id": pair_id,
+                "reserved_nanousd": -PAIR_RESERVATION_NANOUSD,
+            }
+        )
