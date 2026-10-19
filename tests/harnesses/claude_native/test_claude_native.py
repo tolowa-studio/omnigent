@@ -11007,6 +11007,40 @@ async def test_probe_claude_model_options_latches_sigill_for_the_cli(
     assert calls == 3
 
 
+async def test_probe_claude_model_options_persists_sigill_across_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = tmp_path / "claude"
+    command.write_text("broken cli", encoding="utf-8")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setattr(claude_native, "_CLAUDE_SIGILL_UNSUPPORTED_COMMANDS", set())
+    monkeypatch.setattr(
+        claude_native,
+        "_claude_model_probe_invocation",
+        lambda *args, **kwargs: (str(command), [], {}),
+    )
+    calls = 0
+
+    class _SigillProcess:
+        returncode = -claude_native.signal.SIGILL
+
+        async def communicate(self, input: bytes | None = None) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    async def _fake_exec(*args: object, **kwargs: object) -> _SigillProcess:
+        nonlocal calls
+        calls += 1
+        return _SigillProcess()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _fake_exec)
+
+    assert await claude_native.probe_claude_model_options(None) is None
+    claude_native._CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.clear()
+    assert await claude_native.probe_claude_model_options(None) is None
+    assert calls == 1
+
+
 def _subscription_catalog() -> list[dict[str, object]]:
     """
     A direct-login catalog: alias rows plus the appended settings default."""

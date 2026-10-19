@@ -26,6 +26,8 @@ Decisions already made live in **repo + live/staging site**, not in the Factory 
 
 **Would read first (when repo clone available):** site routes and content model, then handoff + runbook, then map backend from code/config.
 
+**Notion (session start — not executed in this dry-run):** resolve `factory_brief_url` from Stash `/projects/craft` or query [Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023) — All Clients `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4` by `Slug=craft` (columns only: `Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`); **`notion-fetch` only** `Tolowa Craft — Factory Brief` from **`Factory brief`**. Do **not** fetch Project Hub, manifest, or State of the Site unless Jeramey asks to **refresh hub**. Check `truncated` / `unknown_block_*` on fetch. Legacy Factory Handoff bundle remains history — link only, not session-start canon.
+
 ## Hub content to build from repo/site (not invent in Notion)
 
 ### Positioning canon (manifest)
@@ -66,9 +68,11 @@ Stubbed or missing pieces → Linear issues with AC, not fictional “live” in
 ## Stash (`/projects/craft`)
 
 - No dense project namespace surfaced in recall; factory ops context lives under `/ops/tolowa-factory`.
-- **Would create:** namespace with hub URL, repo, live site URL, scaffolding map pointer after hub promotion.
+- **Would create:** namespace with **`factory_brief_url`**, hub URL, repo, live site URL, scaffolding map pointer after hub promotion.
 
-## Notion gaps (vs v4)
+## Notion gaps (vs v4) — refresh hub only
+
+Hub gap table below is for an explicit **refresh hub** / stand-up pass, **not** for routine session start (brief-only fetch per skill §2).
 
 | Surface | Status | Repo-first action |
 | --- | --- | --- |
@@ -103,4 +107,4 @@ Stubbed or missing pieces → Linear issues with AC, not fictional “live” in
 2. Draft PR on `tolowa-craft-site` adding `AGENTS.md` + `now.md` (hub URL back-filled after step 3).
 3. Create All Clients row + `Tolowa Craft — Project Hub` + manifest + § pages + State of the Site (bootstrap append); link Factory Handoff without archiving.
 4. Linear onboarding epic with repo-first AC; link in manifest.
-5. `stash.remember` in `/projects/craft` with hub URL, site URL, repo.
+5. `stash.remember` in `/projects/craft` with `factory_brief_url`, hub URL, site URL, repo.

@@ -2,10 +2,11 @@
 name: start-project
 description: >-
   Tolowa factory playbook for the Omnigent orchestrator (tolowa-factory-orchestrator).
-  Onboard or refresh an Active project — recall Stash /projects/{slug} and /ops/tolowa-factory,
-  read the Notion hub + repo instruction files, gap-scan against MOTION Hub Standard v4,
-  then create or link All Clients, hub/manifest, Linear project/epic with acceptance criteria,
-  and Stash namespace with the hub URL. Supports hub-first and repo-first/design-first (live site +
+  Onboard or refresh an Active project — recall Stash /projects/{slug} (factory_brief_url) and
+  /ops/tolowa-factory, read repo instruction files and notion-fetch ONLY the {Name} — Factory Brief
+  page (never the whole hub at session start). Hub gap-scan vs MOTION Hub Standard v4 only on an
+  explicit refresh-hub request. Create or link All Clients, hub/manifest, Linear epic with AC, and
+  Stash with hub + factory brief URLs. Supports hub-first and repo-first/design-first (live site +
   repo as truth; build Notion from them). Write links back to the hub and append State of the Site.
   Load when starting a new Tolowa engagement, promoting Backlog→Active, or running a hub compliance pass.
 ---
@@ -65,9 +66,9 @@ If unsure which path applies: live site + meaningful `docs/design/*-HANDOFF.md` 
 
 ## 1. Recall Stash (always first)
 
-1. `stash.recall` namespace **`/projects/{slug}`** — project facts, hub URLs, repo paths, locks.
+1. `stash.recall` namespace **`/projects/{slug}`** — project facts, **`factory_brief_url`**, hub URLs, repo paths, locks.
 2. `stash.recall` namespace **`/ops/tolowa-factory`** — factory sequencing, gate policy, model routing notes.
-3. If namespace missing, plan to **`stash.remember`** after hub URL is canonical (step 6).
+3. If namespace missing, plan to **`stash.remember`** after hub URL and factory brief URL are canonical (step 6).
 
 Do not treat Stash as authority over signed Notion briefs or versioned repo files; it is the **index**.
 
@@ -75,7 +76,9 @@ Do not treat Stash as authority over signed Notion briefs or versioned repo file
 
 ## 2. Read instruction surfaces (repo + Notion)
 
-**Order depends on path:** repo-first → repo + live site **before** inferring hub content; hub-first → Notion hub/manifest first, then repo.
+**Order depends on path:** repo-first → repo + live site **before** inferring hub content; hub-first → Factory Brief page, then repo.
+
+**Notion at session start (default start / “work on project X”):** resolve the brief URL, then fetch **only** that page. Do **not** fetch the Project Hub, Hub Manifest, State of the Site, MOTION spine pages, or whole databases unless the human explicitly asks to **refresh hub** (see §5).
 
 ### Repo + live site (repo-first: read this block first)
 
@@ -84,14 +87,19 @@ Do not treat Stash as authority over signed Notion briefs or versioned repo file
 3. Inventory **backend scaffolding** from code/config/docs: CMS (e.g. Sanity), CRM (e.g. Twenty), forms/leads, email (e.g. Resend), deploy pipeline — note what is wired vs stubbed.
 4. Then read `AGENTS.md` / `now.md` if present (add from templates if missing).
 
-### Notion
+### Notion — Factory Brief only (session start)
 
-1. Fetch the project's **Project Hub** (title pattern: `{name} — Project Hub`) or the handoff bundle if not yet promoted.
-2. Fetch **Hub Manifest** if present.
-3. Fetch **State of the Site** under §4 (Website & Product) if present.
-4. Skim **MOTION OS Documentation** only for spine links — do not mass-edit Method in this playbook.
+1. **Resolve `factory_brief_url`** (in order):
+   - From Stash recall **`/projects/{slug}`** → `factory_brief_url` when present.
+   - Else query **[Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023)** — backing data source **All Clients** `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4`. `notion-query-data-sources` with `mode: "rows"` (or SQL) filtered on **`Slug`** = `{slug}`; request **only** these properties: `Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`. Use **`Factory brief`** as `factory_brief_url`; **`AIOS Hub`** is the hub URL when needed later (refresh hub only). Do **not** query unfiltered rows or fetch the database/index page body.
+   - If the brief URL is still missing, stop after reporting what is missing — do not substitute by fetching the whole hub tree.
+2. **`notion-fetch`** **only** the page at that URL — title pattern **`{display_name} — Factory Brief`**. One page per project; deep history stays on linked child pages, not inlined in the brief.
+3. **Check fetch metadata:** if `truncated` is true or `unknown_block_count` / `unknown_block_ids` are non-zero, say so in the finish report and fetch linked child pages **only** when the brief explicitly points there — never bulk-fetch the hub to “fill gaps.”
+4. Legacy **Factory Handoff bundles** (research/history): use only if no Factory Brief page exists yet; still **one** targeted fetch, not the full hub. Repo-first: treat bundle prose as non-canonical when it conflicts with repo/site.
 
-**Repo-first:** use Notion gaps to plan **hub content extracted from repo/site** (positioning canon, GTM lines, scaffolding map) — not to replace product truth.
+**Repo-first:** the Factory Brief summarizes operating context; **positioning and product decisions** still come from repo + live site (see above). Use brief gaps to plan hub content later on **refresh hub**, not to relitigate canon at session start.
+
+**Explicit refresh hub only:** gap-scan and fetch hub/manifest/State of the Site per §5 — not part of default session start.
 
 ### Repo (source of truth for agent behavior)
 
@@ -138,7 +146,9 @@ Link the epic in the hub manifest and in `now.md` after creation.
 
 ## 5. Gap scan vs MOTION Hub Standard v4
 
-Compare the project to the v4 checklist (manifest, §0–§7 as applicable, State of the Site, Documents DB rows, All Clients fields). Emit a table:
+Run this section **only** when the human explicitly requests **refresh hub**, **hub compliance**, **hub gap-scan**, or **start** / **stand up** with hub creation (not for a routine “read the brief and work” session). Default **start** / dry-run after §2 uses repo readiness + brief content; defer hub surface checks here.
+
+When authorized, compare the project to the v4 checklist (manifest, §0–§7 as applicable, State of the Site, Documents DB rows, All Clients fields). Fetch hub/manifest/State of the Site **only inside this section**. Emit a table:
 
 | Surface | Status | Action |
 | --- | --- | --- |
@@ -167,7 +177,7 @@ Execute only when the user explicitly authorized **start** (not dry-run).
 
 ### All Clients
 
-Create or update row: `Stage=Active`, `Slug`, `Hub URL`, `Hub manifest page`, `Section schema`, aliases, `Librarian managed=true`, `Meeting-notes auto-move=false`.
+Create or update row: `Stage=Active`, `Slug`, **`Factory brief`** (page `{display_name} — Factory Brief`), **`AIOS Hub`** (hub), `Kind`, `Repo`, `Last brief edit`, `Hub manifest page`, `Section schema`, aliases, `Librarian managed=true`, `Meeting-notes auto-move=false`.
 
 ### Notion hub tree
 
@@ -186,7 +196,7 @@ Create/link project and onboarding epic; every child issue has AC.
 
 ### Stash
 
-`remember` in `/projects/{slug}`: hub URL, manifest URL, repo, Linear project URL, loop stage, owner, next decision date.
+`remember` in `/projects/{slug}`: **`factory_brief_url`**, hub URL, manifest URL, repo, Linear project URL, loop stage, owner, next decision date.
 
 ### Write-back
 
@@ -237,3 +247,4 @@ Return to the human:
 - Compliant hub example: Konative (see v3/v4 compliant table in Hub Standard).
 - Linear team: **Tolowa Studio** (`TOL-*`).
 - Stash layout: `/projects/{slug}`, `/clients/{slug}`, `/ops/tolowa-factory`.
+- Agent project index: [Agent Index: Start Here](https://app.notion.com/p/3fd32e0a547481f29478d06f7dcb5023) — All Clients `collection://11d91c83-5de5-4fee-9c6c-51e095bb2ad4` (`Slug`, `Kind`, `Repo`, `Factory brief`, `AIOS Hub`, `Last brief edit`).
