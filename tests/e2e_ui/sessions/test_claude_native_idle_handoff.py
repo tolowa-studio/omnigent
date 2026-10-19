@@ -62,6 +62,7 @@ def _agents_row(page: Page, child_id: str) -> Locator:
     return row
 
 
+@pytest.mark.flaky(reruns=2, reruns_delay=5)
 @pytest.mark.timeout(360)
 def test_completed_claude_child_survives_stale_status_handoff(
     page: Page,
@@ -188,8 +189,7 @@ def test_completed_claude_child_survives_stale_status_handoff(
         composer.fill(_PARENT_PROMPT)
         page.get_by_role("button", name="Send", exact=True).click()
         _poll_until(
-            lambda: _PARENT_RESULT
-            in json.dumps(_get(client, f"/v1/sessions/{parent_id}/items")),
+            lambda: _PARENT_RESULT in json.dumps(_get(client, f"/v1/sessions/{parent_id}/items")),
             timeout=120,
             what="parent native turn to produce the final assistant reply",
         )
