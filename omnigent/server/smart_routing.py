@@ -2616,7 +2616,11 @@ class JevShadowRouting:
             status = "unavailable"
             if reserved:
                 try:
-                    await asyncio.to_thread(store.release_reservation, pair_id)
+                    await asyncio.to_thread(
+                        store.release_reservation,
+                        pair_id,
+                        ledger_day=reservation_day.isoformat(),
+                    )
                 except Exception:  # noqa: BLE001 — release failure must not affect routing
                     _logger.warning("Jev shadow reservation release failed", exc_info=True)
         except ValueError as exc:

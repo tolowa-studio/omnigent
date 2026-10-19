@@ -274,31 +274,25 @@ async def test_typesafe_key_not_logged_in_httpx_debug(tmp_path, monkeypatch, cap
 
 async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-secret")
-    instants = [
-        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-        datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
-        datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
-        datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
-        datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC),
-        datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC),
-    ]
-    cursor = {"i": 0}
+    calls = 0
 
     def stepping_utc_now():
-        i = min(cursor["i"], len(instants) - 1)
-        cursor["i"] += 1
-        return instants[i]
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            return datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC)
+        return datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
     monkeypatch.setattr("omnigent.server.jev_receipts.utc_now", stepping_utc_now)
 
     post = AsyncMock()
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
-    releases: list[str] = []
+    releases: list[tuple[str, str | None]] = []
     original_release = JevReceiptStore.release_reservation
 
-    def track_release(self, pair_id: str) -> None:
-        releases.append(pair_id)
-        original_release(self, pair_id)
+    def track_release(self, pair_id: str, *, ledger_day: str | None = None) -> None:
+        releases.append((pair_id, ledger_day))
+        original_release(self, pair_id, ledger_day=ledger_day)
 
     monkeypatch.setattr(JevReceiptStore, "release_reservation", track_release)
     path = tmp_path / "receipts.jsonl"
@@ -306,7 +300,8 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
         "task", {"codex": ["small"]}, None, "oss-llm"
     )
     post.assert_not_awaited()
-    assert releases
+    assert releases == [pytest.approx(())] or releases  # noqa: B015 - ensure release ran
+    assert releases and releases[0][1] == "2026-01-01"
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     reserved = sum(row.get("reserved_nanousd", 0) for row in rows if row["day"] == "2026-01-01")
     assert reserved == 0

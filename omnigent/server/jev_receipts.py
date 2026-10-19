@@ -44,14 +44,20 @@ class JevReceiptStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def append(self, record: dict[str, Any], *, reserve: bool = False) -> bool:
+    def append(
+        self,
+        record: dict[str, Any],
+        *,
+        reserve: bool = False,
+        ledger_day: str | None = None,
+    ) -> bool:
         """Validate the chain and reserve budget atomically before network I/O."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "r+", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             now = utc_now()
-            today = now.date().isoformat()
+            today = ledger_day if ledger_day is not None else now.date().isoformat()
             spent = 0
             previous = None
             for line in stream:
@@ -79,12 +85,13 @@ class JevReceiptStore:
             os.fsync(stream.fileno())
             return True
 
-    def release_reservation(self, pair_id: str) -> None:
+    def release_reservation(self, pair_id: str, *, ledger_day: str | None = None) -> None:
         """Undo a pair reservation when no Typesafe traffic was consumed."""
         self.append(
             {
                 "kind": "reservation_release",
                 "pair_id": pair_id,
                 "reserved_nanousd": -PAIR_RESERVATION_NANOUSD,
-            }
+            },
+            ledger_day=ledger_day,
         )
