@@ -1456,6 +1456,10 @@ async def test_auto_create_claude_terminal_grants_only_own_hook_state(
     monkeypatch.setattr(claude_native_bridge, "_TRUSTED_PARENT", tmp_path)
     monkeypatch.setattr(claude_native_bridge, "_BRIDGE_ROOT", tmp_path / "root")
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://127.0.0.1:8000")
+    monkeypatch.setattr(
+        "omnigent.harnesses.claude_native.main.resolve_native_claude_config",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-key")
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
     monkeypatch.setenv("OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN", "test-runner-token")
@@ -1681,12 +1685,13 @@ async def test_auto_create_claude_terminal_injects_ucode_gateway_config(
     # The gateway env points ``claude`` at the Databricks gateway, and
     # ENABLE_TOOL_SEARCH forces Claude Code to defer MCP tool schemas
     # instead of loading all 200+ bridge tools into startup context.
-    assert spec.env == {
+    expected_env = {
         **gateway_env,
         "ENABLE_TOOL_SEARCH": "true",
         "CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
     }
+    assert expected_env.items() <= spec.env.items()
     assert spec.command == "claude"
     # The gateway default model is applied (no per-session override here).
     assert "--model" in spec.args

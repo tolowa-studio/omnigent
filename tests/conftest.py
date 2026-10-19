@@ -21,6 +21,26 @@ except ImportError:
 # deliberately replaces ambient state; subprocesses inherit the safe override.
 _TEST_OMNIGENT_DATA_DIR = Path(tempfile.mkdtemp(prefix="omnigent-pytest-")).resolve()
 os.environ["OMNIGENT_DATA_DIR"] = str(_TEST_OMNIGENT_DATA_DIR)
+# Keep native hook IPC sockets under the macOS AF_UNIX path limit in unit tests.
+_TEST_NATIVE_IPC_ROOT = (_TEST_OMNIGENT_DATA_DIR / "ipc").resolve()
+os.environ["OMNIGENT_NATIVE_IPC_ROOT"] = str(_TEST_NATIVE_IPC_ROOT)
+
+# Ambient provider credentials and runner control tokens must not change how
+# unit tests resolve native launch configs or env_unset lists.
+_AMBIENT_CREDENTIAL_ENV_PREFIXES = (
+    "OPENAI_",
+    "ANTHROPIC_",
+    "GEMINI_",
+    "GOOGLE_",
+    "AZURE_OPENAI_",
+)
+_AMBIENT_CREDENTIAL_ENV_EXACT = frozenset(
+    {
+        "LLM_API_KEY",
+        "OMNIGENT_REMOTE_AUTH_TOKEN",
+        "RUNNER_SERVER_URL",
+    }
+)
 
 # Skip the synchronous api.litellm.ai/model_catalog HTTP fallback during
 # tests. Hardened CI runners can't reach the public internet, so every
@@ -66,6 +86,22 @@ from omnigent.runtime.filesystem_registry import GitFilesystemRegistry  # noqa: 
 from tests import _model_pools  # noqa: E402
 
 pytest_plugins = ["tests._token_usage"]
+
+
+@pytest.fixture(autouse=True)
+def _strip_ambient_provider_and_runner_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drop ambient LLM keys and runner auth tokens for deterministic unit tests."""
+    from omnigent.runner.identity import RUNNER_AUTH_SECRET_ENV_VARS
+
+    for name in list(os.environ):
+        if name.startswith(_AMBIENT_CREDENTIAL_ENV_PREFIXES):
+            monkeypatch.delenv(name, raising=False)
+    for name in _AMBIENT_CREDENTIAL_ENV_EXACT:
+        monkeypatch.delenv(name, raising=False)
+    for name in RUNNER_AUTH_SECRET_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:

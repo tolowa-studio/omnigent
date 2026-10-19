@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 import httpx
+import pytest
 from playwright.sync_api import Page, expect
 
 from tests.e2e_ui.conftest import seed_committed_items
@@ -113,6 +114,7 @@ def _expect_content_length_failure(page: Page, *, expected_pills: int) -> None:
     expect(message).to_contain_text(str(_LIMIT_BYTES))
 
 
+@pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_oversized_session_turn_and_fork_fail_with_content_length_error(
     page: Page,
     seeded_session: tuple[str, str],

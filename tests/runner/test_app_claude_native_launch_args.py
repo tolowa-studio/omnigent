@@ -222,7 +222,13 @@ def test_claude_terminal_env_unset_without_helper_keeps_key() -> None:
     ``CLAUDECODE`` must still be absent because Claude Code rejects nested
     launches in every auth mode.
     """
-    expected = ["DATABRICKS_CONFIG_PROFILE", "CLAUDECODE"]
+    expected = [
+        "DATABRICKS_CONFIG_PROFILE",
+        "CLAUDECODE",
+        "OMNIGENT_REMOTE_AUTH_TOKEN",
+        "OMNIGENT_RUNNER_INITIAL_AUTH_TOKEN",
+        "OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN",
+    ]
     own_login_env_unset = _claude_terminal_env_unset(None)
     assert own_login_env_unset == expected
     assert "ANTHROPIC_API_KEY" not in own_login_env_unset
