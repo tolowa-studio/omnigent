@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import os
+import platform
 import re
 import secrets
 import shlex
@@ -20,6 +21,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
 
 from omnigent.llms.adapters._content import redact_binary_payloads
@@ -215,7 +218,8 @@ _CLAUDE_NONESSENTIAL_TRAFFIC_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 _CLAUDE_RESUME_ITEMS_PAGE_LIMIT = 1000
 _CLAUDE_RESUME_ITEMS_PAGE_LIMIT_FLOOR = 100
 _CLAUDE_MODEL_PROBE_TIMEOUT_S = 20.0
-# A host restart clears this after the CLI is replaced or repaired.
+# A short-lived disk memo survives host-service restarts while a CLI is broken.
+_CLAUDE_SIGILL_CACHE_TTL_S = 7 * 24 * 60 * 60
 _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS: set[str] = set()
 #: Wall-clock cap for the per-alias resolution fan-out as a whole; aliases
 #: still unresolved when it expires keep their bare rows (the cache's
@@ -242,6 +246,90 @@ _CLAUDE_CODE_DISABLE_AGENT_VIEW_ENV = "CLAUDE_CODE_DISABLE_AGENT_VIEW"
 # only in the pane, so a web-driven session shows an unanswerable prompt —
 # often with nobody attached to the terminal at all.
 _CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV = "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
+
+
+def _claude_sigill_cache_path() -> Path:
+    """Return the per-user cache file for a known-broken Claude CLI."""
+    cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    if not cache_root.is_absolute():
+        cache_root = Path.home() / ".cache"
+    return cache_root / "omnigent" / "claude-sigill.json"
+
+
+def _claude_sigill_binary_identity(command: str) -> dict[str, int | str] | None:
+    """Identify the executable so replacing the CLI invalidates the memo."""
+    executable = Path(command)
+    if not executable.is_absolute():
+        located = shutil.which(command)
+        if located is None:
+            return None
+        executable = Path(located)
+    try:
+        resolved = executable.resolve(strict=True)
+        stat = resolved.stat()
+    except OSError:
+        return None
+    if not resolved.is_file():
+        return None
+    return {
+        "host": platform.node(),
+        "path": str(resolved),
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
+def _claude_sigill_is_latched(command: str) -> bool:
+    if command in _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS:
+        return True
+    identity = _claude_sigill_binary_identity(command)
+    if identity is None:
+        return False
+    try:
+        record = json.loads(_claude_sigill_cache_path().read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            return False
+        age = time.time() - record.get("recorded_at", 0)
+        if (
+            record.get("version") == 1
+            and isinstance(age, (int, float))
+            and 0 <= age < _CLAUDE_SIGILL_CACHE_TTL_S
+            and record.get("binary") == identity
+        ):
+            _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+            return True
+    except (OSError, ValueError, TypeError):
+        pass
+    return False
+
+
+def _latch_claude_sigill(command: str) -> None:
+    _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+    identity = _claude_sigill_binary_identity(command)
+    if identity is None:
+        return
+    path = _claude_sigill_cache_path()
+    temporary_path: str | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix="claude-sigill-", delete=False
+        ) as temporary:
+            temporary_path = temporary.name
+            json.dump({"version": 1, "recorded_at": time.time(), "binary": identity}, temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    except OSError:
+        _logger.debug("Could not persist Claude SIGILL memo", exc_info=True)
+    finally:
+        if temporary_path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary_path)
+
+
 # Claude Code env vars that pin each model-tier alias to a provider-specific
 # model ID.  When set, the /model picker shows these IDs as options rather
 # than normalising to canonical Anthropic names (which the Databricks gateway
@@ -988,7 +1076,7 @@ async def _resolve_claude_model_alias(
         claude_config,
         ("--model", alias),
     )
-    if command in _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS:
+    if _claude_sigill_is_latched(command):
         return {}
     try:
         process = await asyncio.create_subprocess_exec(
@@ -1017,7 +1105,7 @@ async def _resolve_claude_model_alias(
         return {}
     if process.returncode != 0:
         if process.returncode == -signal.SIGILL:
-            _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+            _latch_claude_sigill(command)
             _logger.warning("Claude CLI %r is unsupported on this host (SIGILL)", command)
         _logger.debug("Claude alias resolution exited %s for %r", process.returncode, alias)
         return {}
@@ -1146,7 +1234,7 @@ async def _run_claude_model_probe(
     command, launch_args, env = _claude_model_probe_invocation(
         claude_config, stream_input=stream_input
     )
-    if command in _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS:
+    if _claude_sigill_is_latched(command):
         _logger.debug("Skipping Claude model probe for unsupported CLI %r", command)
         return None
     requests = [
@@ -1195,7 +1283,7 @@ async def _run_claude_model_probe(
     text = stdout.decode(errors="replace")
     if process.returncode != 0:
         if process.returncode == -signal.SIGILL:
-            _CLAUDE_SIGILL_UNSUPPORTED_COMMANDS.add(command)
+            _latch_claude_sigill(command)
             _logger.warning("Claude CLI %r is unsupported on this host (SIGILL)", command)
         _logger.warning(
             "Claude model probe exited %s: %s",
