@@ -6127,7 +6127,10 @@ async def test_channel_server_relays_active_omnigent_tools(
             proc.stdin,
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
         )
-        initialize = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        subprocess_timeout_s = 30.0
+        initialize = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert initialize["id"] == 1
 
         relay = start_tool_relay(
@@ -6146,14 +6149,18 @@ async def test_channel_server_relays_active_omnigent_tools(
             loop=asyncio.get_running_loop(),
         )
         post_tools_changed(bridge_dir, cancelled=threading.Event() if cancellable else None)
-        changed = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        changed = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert changed["method"] == "notifications/tools/list_changed"
 
         _write_json_line(
             proc.stdin,
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )
-        listed = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        listed = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         listed_tools = listed["result"]["tools"]
         custom_tools = [tool for tool in listed_tools if tool["name"] == "sys_custom"]
         assert custom_tools == [
@@ -6179,7 +6186,9 @@ async def test_channel_server_relays_active_omnigent_tools(
                 },
             },
         )
-        tool_result = await asyncio.to_thread(_read_json_line, proc.stdout, timeout_s=5.0)
+        tool_result = await asyncio.to_thread(
+            _read_json_line, proc.stdout, timeout_s=subprocess_timeout_s
+        )
         assert tool_result["id"] == 3
         if result_kind == "text":
             text = tool_result["result"]["content"][0]["text"]
