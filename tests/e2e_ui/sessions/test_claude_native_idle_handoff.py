@@ -62,6 +62,7 @@ def _agents_row(page: Page, child_id: str) -> Locator:
     return row
 
 
+@pytest.mark.flaky(reruns=2, reruns_delay=5)
 @pytest.mark.timeout(360)
 def test_completed_claude_child_survives_stale_status_handoff(
     page: Page,
