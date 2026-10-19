@@ -196,6 +196,25 @@ def test_backends_from_caps_keeps_jev_shadow_without_routing_client(tmp_path):
     assert backends.local is None and backends.external is None
 
 
+def test_release_reservation_net_zero_spend(tmp_path):
+    path = tmp_path / "receipts.jsonl"
+    store = JevReceiptStore(path)
+    assert store.append(
+        {
+            "kind": "reservation",
+            "pair_id": "pair-1",
+            "reserved_nanousd": PAIR_RESERVATION_NANOUSD,
+        },
+        reserve=True,
+    )
+    store.release_reservation("pair-1")
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    day = rows[0]["day"]
+    spent = sum(row.get("reserved_nanousd", 0) for row in rows if row["day"] == day)
+    assert spent == 0
+    assert any(row.get("kind") == "reservation_release" for row in rows)
+
+
 def test_receipt_store_does_not_mutate_persisted_rows(tmp_path):
     path = tmp_path / "receipts.jsonl"
     store = JevReceiptStore(path)
@@ -261,6 +280,7 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
         datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 1, tzinfo=UTC),
         datetime(2026, 1, 1, 12, 0, 2, tzinfo=UTC),
+        datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC),
     ]
     cursor = {"i": 0}
 
@@ -271,25 +291,25 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
 
     monkeypatch.setattr("omnigent.server.jev_receipts.utc_now", stepping_utc_now)
 
-    async def post(self, url, **kwargs):
-        return httpx.Response(
-            200,
-            request=httpx.Request("POST", url),
-            json={
-                "model": "jev-1.13.0",
-                "answers": {"pick": {"type": "choice", "choice": "ESCAPE"}},
-            },
-        )
-
+    post = AsyncMock()
     monkeypatch.setattr(httpx.AsyncClient, "post", post)
+    releases: list[str] = []
+    original_release = JevReceiptStore.release_reservation
+
+    def track_release(self, pair_id: str) -> None:
+        releases.append(pair_id)
+        original_release(self, pair_id)
+
+    monkeypatch.setattr(JevReceiptStore, "release_reservation", track_release)
     path = tmp_path / "receipts.jsonl"
     await JevShadowRouting("shadow", str(path)).observe(
         "task", {"codex": ["small"]}, None, "oss-llm"
     )
+    post.assert_not_awaited()
+    assert releases
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     reserved = sum(row.get("reserved_nanousd", 0) for row in rows if row["day"] == "2026-01-01")
     assert reserved == 0
-    assert any(row.get("kind") == "reservation_release" for row in rows)
 
 
 async def test_shared_typesafe_client_across_pair(tmp_path, monkeypatch):

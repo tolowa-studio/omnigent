@@ -2549,6 +2549,9 @@ class JevShadowRouting:
             )
             if not reserved:
                 return
+            boundary_now = utc_now()
+            if boundary_now.date() != reservation_day or not utc_budget_open(boundary_now):
+                raise JevBudgetBoundaryError("UTC budget boundary")
             client = _jev_typesafe_http_client()
             auth = _bearer_auth(key)
             async with asyncio.timeout(3.0):
