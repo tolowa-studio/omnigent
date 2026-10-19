@@ -17,8 +17,9 @@ deployment whose workspace has no routing API on Smart Routing at all.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -26,7 +27,13 @@ if TYPE_CHECKING:
 
     from omnigent.server.smart_routing import RoutingClient, RoutingResult
 
+from omnigent.server.smart_routing import JevShadowRouting
+
 _logger = logging.getLogger(__name__)
+# custom-lint: disable-next=workspace-scoped-cache -- task objects are globally unique
+_shadow_tasks: set[asyncio.Task[None]] = set()
+# Pending shadow observers; all mutations run on the event loop under the lock.
+_shadow_tasks_lock = asyncio.Lock()
 
 #: Which router produced a decision. ``"databricks-aigw"`` is the external
 #: ``task_v1`` service; ``"oss-llm"`` is the built-in judge.
@@ -47,6 +54,7 @@ class RoutingBackends:
 
     external: RoutingClient | None = None
     local: RoutingClient | None = None
+    shadow: JevShadowRouting = field(default_factory=JevShadowRouting.from_env)
 
     def any(self) -> RoutingClient | None:
         """The client to use when nothing is known about gateway backing.
@@ -126,7 +134,7 @@ class RoutedCall:
     client: RoutingClient
 
 
-async def route_with_fallback(
+async def _route_with_fallback(
     backends: RoutingBackends,
     message: str,
     available_models: dict[str, list[str]],
@@ -180,6 +188,45 @@ async def route_with_fallback(
         source="oss-llm",
         client=backends.local,
     )
+
+
+async def route_with_fallback(
+    backends: RoutingBackends,
+    message: str,
+    available_models: dict[str, list[str]],
+    *,
+    gateway_backed: bool,
+) -> RoutedCall | None:
+    """Return the existing router's verdict and observe it without mutation."""
+    call = await _route_with_fallback(
+        backends,
+        message,
+        available_models,
+        gateway_backed=gateway_backed,
+    )
+    if call is not None and backends.shadow.mode == "shadow":
+        candidates = {harness: list(models) for harness, models in available_models.items()}
+
+        async def observe() -> None:
+            try:
+                await backends.shadow.observe(message, candidates, call.result, call.source)
+            except Exception:  # noqa: BLE001 — observers cannot change authoritative routing
+                _logger.warning("Jev shadow observer unavailable", exc_info=True)
+
+        async with _shadow_tasks_lock:
+            if len(_shadow_tasks) < 8:
+                task = asyncio.create_task(observe())
+                _shadow_tasks.add(task)
+                task.add_done_callback(_shadow_tasks.discard)
+    return call
+
+
+async def drain_shadow_observers() -> None:
+    """Wait for pending receipts in probes/tests; interactive routing never waits."""
+    async with _shadow_tasks_lock:
+        pending = tuple(_shadow_tasks)
+    if pending:
+        await asyncio.gather(*pending)
 
 
 def reported_gateway_inference(
@@ -244,15 +291,20 @@ def backends_from_caps(caps: Any) -> RoutingBackends:  # type: ignore[explicit-a
         return RoutingBackends()
     backends = getattr(caps, "routing_backends", None)
     if isinstance(backends, RoutingBackends):
-        return backends
+        shadow = getattr(caps, "jev_shadow", backends.shadow)
+        return backends if shadow == backends.shadow else replace(backends, shadow=shadow)
     client = getattr(caps, "routing_client", None)
     if client is None:
-        return RoutingBackends()
+        return RoutingBackends(shadow=getattr(caps, "jev_shadow", JevShadowRouting.from_env()))
     from omnigent.server.smart_routing import ExternalRoutingClient
 
     if isinstance(client, ExternalRoutingClient):
-        return RoutingBackends(external=client)
-    return RoutingBackends(local=client)
+        return RoutingBackends(
+            external=client, shadow=getattr(caps, "jev_shadow", JevShadowRouting.from_env())
+        )
+    return RoutingBackends(
+        local=client, shadow=getattr(caps, "jev_shadow", JevShadowRouting.from_env())
+    )
 
 
 def _managed_llm_capability(caps: Any) -> bool:  # type: ignore[explicit-any]  # RuntimeCaps-shaped
