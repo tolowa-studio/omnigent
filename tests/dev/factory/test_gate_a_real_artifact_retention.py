@@ -45,7 +45,12 @@ def _touch_task_dir(
 ) -> Path:
     run_dir = root / task_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    if started_at is not None or status is not None or pr_merged is not None or pr_state is not None:
+    if (
+        started_at is not None
+        or status is not None
+        or pr_merged is not None
+        or pr_state is not None
+    ):
         meta: dict[str, object] = {"schema": RUN_METADATA_SCHEMA, "task_id": task_id}
         if started_at is not None:
             meta["started_at"] = started_at.isoformat()
@@ -90,7 +95,9 @@ def test_is_artifact_run_dir_requires_task_id_and_marker(tmp_path: Path) -> None
     logs.mkdir()
     (logs / "factory.log").write_text("noise\n", encoding="utf-8")
     assert is_artifact_run_dir(logs) is False
-    assert list_factory_run_dirs(root) == [] or all(r.name != "logs" for r in list_factory_run_dirs(root))
+    assert list_factory_run_dirs(root) == [] or all(
+        r.name != "logs" for r in list_factory_run_dirs(root)
+    )
 
 
 def test_invalid_receipt_does_not_block_abandoned_or_discovery(tmp_path: Path) -> None:
@@ -165,7 +172,7 @@ def test_active_lock_keeps_abandoned_candidate_in_progress(tmp_path: Path) -> No
     now = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
     root = tmp_path / "artifacts"
     root.mkdir()
-    held = _touch_task_dir(
+    _touch_task_dir(
         root,
         "tol-held",
         started_at=now - timedelta(days=10),
@@ -286,10 +293,14 @@ def test_list_factory_run_dirs_ignores_symlink_children(tmp_path: Path) -> None:
     assert real.is_dir()
 
 
-def test_resolve_artifacts_root_from_registry_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_artifacts_root_from_registry_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "artifacts"
     root.mkdir()
-    _touch_task_dir(root, "tol-task", receipt={"ok": False, "completed_at": "2026-01-01T00:00:00+00:00"})
+    _touch_task_dir(
+        root, "tol-task", receipt={"ok": False, "completed_at": "2026-01-01T00:00:00+00:00"}
+    )
     monkeypatch.setenv(REAL_TASK_ARTIFACTS_ROOT_ENV, str(root))
     assert resolve_artifacts_root() == root.resolve()
 

@@ -150,8 +150,9 @@ def test_message_event_truncates_long_text() -> None:
         )
     )
 
-    assert "x" * 400 + "…" in text
-    assert "x" * 401 not in text
+    body = "\n".join(text.splitlines()[1:])
+    assert body.count("x") == 400
+    assert "…" in body
 
 
 def test_event_function_call_shows_name_and_arguments() -> None:
@@ -205,8 +206,9 @@ def test_event_function_call_output_truncates_long_output() -> None:
 
     text = _text(_render_overview_event(1, item, {"c1": "Bash"}, _Fmt()))
 
-    assert "y" * 400 + "…" in text
-    assert "y" * 401 not in text
+    body = "\n".join(text.splitlines()[1:])
+    assert body.count("y") == 400
+    assert "…" in body
 
 
 def test_event_reasoning_prefers_summary_then_content_and_skips_blank_lines() -> None:

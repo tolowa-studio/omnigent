@@ -102,12 +102,13 @@ def inventory() -> dict[str, int | str]:
     cursor: str | None = None
     pages = 0
     while True:
-        query: dict[str, str] = {"limit": "1000", "include_archived": "true", "kind": "any"}
-        if cursor:
-            query["cursor"] = cursor
-        request = urllib.request.Request(
-            "http://127.0.0.1:6767/v1/sessions?" + urllib.parse.urlencode(query)
+        sessions_url = (
+            "http://127.0.0.1:6767/v1/sessions?"
+            "limit=1000&include_archived=true&kind=any&visibility=all"
         )
+        if cursor:
+            sessions_url += "&" + urllib.parse.urlencode({"cursor": cursor})
+        request = urllib.request.Request(sessions_url)
         with urllib.request.urlopen(request, timeout=10) as response:
             payload = json.load(response)
         batch = payload.get("data", payload.get("sessions", []))

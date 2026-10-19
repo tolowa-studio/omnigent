@@ -35,9 +35,14 @@ _COMPOSER = "\n─────────────────────�
 
 
 @pytest.fixture
-def native_bridge(tmp_path: Path) -> Path:
-    native = tmp_path / "bridge"
-    native.mkdir()
+def native_bridge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    trusted_root = tmp_path / "trusted"
+    bridge_root = trusted_root / f"omnigent-{bridge.stable_user_id()}" / "claude-native"
+    monkeypatch.setattr(bridge, "_TRUSTED_PARENT", trusted_root)
+    monkeypatch.setattr(bridge, "_BRIDGE_ROOT", bridge_root)
+    native = bridge_root / "unit-test-bridge"
+    native.mkdir(parents=True, mode=0o700)
+    (native / "hook-output").mkdir(mode=0o700)
     (native / "bridge.json").write_text(json.dumps({"active_session_id": "session-question"}))
     (native / "tmux.json").write_text(
         json.dumps({"socket_path": "/tmp/example.sock", "tmux_target": "main"})
