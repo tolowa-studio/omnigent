@@ -220,7 +220,6 @@ async def test_budget_boundary_refunds_reservation(tmp_path, monkeypatch, second
             return datetime.now(tz)
 
     monkeypatch.setattr("omnigent.server.jev_receipts.datetime", FrozenDateTime)
-    monkeypatch.setattr("omnigent.server.smart_routing.datetime", FrozenDateTime)
     assert utc_budget_open(frozen) == (second < 50)
 
     post = AsyncMock()
@@ -279,7 +278,6 @@ async def test_day_rollover_refunds_reservation(tmp_path, monkeypatch):
             return datetime.now(tz)
 
     monkeypatch.setattr("omnigent.server.jev_receipts.datetime", SteppingDateTime)
-    monkeypatch.setattr("omnigent.server.smart_routing.datetime", SteppingDateTime)
 
     async def post(self, url, **kwargs):
         return httpx.Response(

@@ -2504,15 +2504,15 @@ class JevShadowRouting:
         """Record a paired recommendation, preserving the authoritative pick."""
         import os
         import uuid
-        from datetime import UTC, datetime
         from pathlib import Path
 
         from omnigent.server.jev_receipts import (
             JevBudgetBoundaryError,
-            PAIR_RESERVATION_NANOUSD,
             JevReceiptStore,
+            PAIR_RESERVATION_NANOUSD,
             digest,
             utc_budget_open,
+            utc_now,
         )
 
         if self.mode != "shadow" or not self.receipt_path:
@@ -2530,7 +2530,7 @@ class JevShadowRouting:
         complexity = None
         status = "unavailable"
         started = time.monotonic()
-        reservation_day = datetime.now(UTC).date()
+        reservation_day = utc_now().date()
         reserved = False
         try:
             if len(json.dumps(state).encode()) > 2500:
@@ -2553,7 +2553,7 @@ class JevShadowRouting:
             async with asyncio.timeout(3.0):
 
                 async def ask(instructions: str, criteria: dict[str, str], context: object) -> str:
-                    now = datetime.now(UTC)
+                    now = utc_now()
                     if now.date() != reservation_day or not utc_budget_open(now):
                         raise JevBudgetBoundaryError("UTC budget boundary")
                     payload = {

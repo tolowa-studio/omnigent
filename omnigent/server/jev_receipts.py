@@ -20,9 +20,14 @@ class JevBudgetBoundaryError(ValueError):
     """Raised when a shadow pair must not start or continue past the UTC-day cutoff."""
 
 
+def utc_now() -> datetime:
+    """Current UTC instant (single seam for shadow routing and tests)."""
+    return datetime.now(UTC)
+
+
 def utc_budget_open(now: datetime | None = None) -> bool:
     """Whether a new reservation or Typesafe call is allowed at *now* (UTC)."""
-    instant = now or datetime.now(UTC)
+    instant = now or utc_now()
     return not (instant.hour == 23 and instant.minute == 59 and instant.second >= 50)
 
 
@@ -45,7 +50,7 @@ class JevReceiptStore:
         fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "r+", encoding="utf-8") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
-            today = datetime.now(UTC).date().isoformat()
+            today = utc_now().date().isoformat()
             spent = 0
             previous = None
             for line in stream:
@@ -64,7 +69,7 @@ class JevReceiptStore:
             row = dict(
                 record,
                 day=today,
-                timestamp_utc=datetime.now(UTC).isoformat(),
+                timestamp_utc=utc_now().isoformat(),
                 previous_hash=previous,
             )
             row["receipt_hash"] = digest(row)

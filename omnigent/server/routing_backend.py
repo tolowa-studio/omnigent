@@ -31,9 +31,9 @@ from omnigent.server.smart_routing import JevShadowRouting
 
 _logger = logging.getLogger(__name__)
 # custom-lint: disable-next=workspace-scoped-cache -- task objects are globally unique
+_shadow_tasks: set[asyncio.Task[None]] = set()
 # Pending shadow observers; all mutations run on the event loop under the lock.
 _shadow_tasks_lock = asyncio.Lock()
-_shadow_tasks: set[asyncio.Task[None]] = set()
 
 #: Which router produced a decision. ``"databricks-aigw"`` is the external
 #: ``task_v1`` service; ``"oss-llm"`` is the built-in judge.
